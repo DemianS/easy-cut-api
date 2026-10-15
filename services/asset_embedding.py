@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 from uuid import UUID
 
 from sqlalchemy import select
@@ -13,6 +14,9 @@ from sql.database import session_scope
 from sql.enums import AssetStatus, DescriptionStatus, EmbeddingStatus
 from sql.enums import JobStatus, JobType
 from sql.models import Asset, Job, Shot, ShotDescription, ShotEmbedding
+
+
+logger = logging.getLogger(__name__)
 
 TEXT_VERSION = "shot-description-text-v1"
 MAX_ERROR_MESSAGE_LENGTH = 2000
@@ -184,6 +188,7 @@ async def _store_embedding_failure(
     error: Exception,
 ) -> None:
     async with session_scope() as session:
+        logger.error(repr(error))
         embedding = await session.get(ShotEmbedding, embedding_id)
         job = await session.get(Job, job_id)
         if embedding is not None:

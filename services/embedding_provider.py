@@ -2,6 +2,7 @@
 
 import ipaddress
 import json
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -9,7 +10,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import requests
 from sql.models.shot_embedding import EMBEDDING_DIMENSIONS
+
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
@@ -103,22 +108,26 @@ class OllamaEmbeddingProvider:
             "input": normalized_text,
             "dimensions": self.settings.dimensions,
         }
-        request = Request(
-            f"{self.settings.base_url}/api/embed",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        
         try:
-            with urlopen(request, timeout=self.settings.timeout_seconds) as response:
-                raw_response = json.loads(response.read().decode("utf-8"))
-            embeddings = raw_response["embeddings"]
+            response = requests.post(
+                         f"{self.settings.base_url}/api/embed",
+                         json=payload,
+                         timeout=60
+                    )
+            result = response.json()
+            embeddings = result["embeddings"]
+            if not embeddings:
+                logger.error("Empty embedding response")
+                raise EmbeddingProviderError("Empty embedding")
             vector = embeddings[0]
         except (HTTPError, URLError, TimeoutError, OSError) as error:
+            logger.error(repr(error))
             raise EmbeddingProviderError(
                 "Локальная embedding-модель недоступна"
             ) from error
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+            logger.error(repr(error))
             raise EmbeddingProviderError(
                 "Embedding-модель вернула ответ неверного формата"
             ) from error
