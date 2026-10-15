@@ -1,9 +1,11 @@
-"""Просмотр проиндексированной медиабиблиотеки."""
+"""Просмотр и запуск анализа проиндексированной медиабиблиотеки."""
 
+import asyncio
 from collections import defaultdict
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import Select, asc, desc, func, select
@@ -12,12 +14,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from dependencies import get_session
 from schemas.assets import AssetDetailResponse, AssetListItem, AssetPageResponse
 from schemas.assets import AssetLocationResponse
-from sql.enums import AssetKind, AssetStatus
-from sql.models import Asset, AssetLocation
+from schemas.assets import ShotDescriptionResponse, ShotFrameResponse
+from schemas.assets import ShotListResponse, ShotResponse
+from schemas.jobs import JobResponse
+from services.vision_provider import VisionProviderNotConfiguredError
+from services.vision_provider import get_vision_settings
+from sql.enums import AssetKind, AssetStatus, JobStatus, JobType
+from sql.models import Asset, AssetLocation, Job, Shot, ShotDescription, ShotFrame
+from worker import celery_app
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 50
+ACTIVE_JOB_STATUSES = (JobStatus.PENDING, JobStatus.RUNNING)
 SortField = Literal[
     "created_at",
     "updated_at",
@@ -199,4 +208,216 @@ async def get_asset(
         probe_metadata=asset.probe_metadata,
         last_attempt_at=asset.last_attempt_at,
         locations=[AssetLocationResponse.model_validate(item) for item in locations],
+    )
+
+
+async def _start_asset_job(
+    asset_id: UUID,
+    job_type: JobType,
+    task_name: str,
+    session: AsyncSession,
+) -> Job:
+    asset = await session.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Медиаактив не найден",
+        )
+    if asset.media_kind != AssetKind.VIDEO.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Анализ планов доступен только для видео",
+        )
+    location = await session.scalar(
+        select(AssetLocation)
+        .where(
+            AssetLocation.asset_id == asset_id,
+            AssetLocation.is_available.is_(True),
+        )
+        .order_by(AssetLocation.relative_path)
+        .limit(1)
+    )
+    if location is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="У медиаактива нет доступного расположения",
+        )
+
+    active_job = await session.scalar(
+        select(Job)
+        .where(
+            Job.asset_id == asset_id,
+            Job.job_type == job_type.value,
+            Job.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    )
+    if active_job is not None:
+        return active_job
+
+    job_id = uuid4()
+    job = Job(
+        id=job_id,
+        job_type=job_type.value,
+        status=JobStatus.PENDING,
+        media_root_id=location.media_root_id,
+        asset_id=asset_id,
+        celery_task_id=str(job_id),
+    )
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+    try:
+        await asyncio.to_thread(
+            celery_app.send_task,
+            task_name,
+            args=[str(job_id)],
+            task_id=str(job_id),
+        )
+    except Exception as error:
+        failed_at = datetime.now(UTC)
+        job.status = JobStatus.FAILED
+        job.error_code = "queue_unavailable"
+        job.error_message = "Не удалось отправить задачу в очередь"
+        job.finished_at = failed_at
+        job.heartbeat_at = failed_at
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": job.error_message, "job_id": str(job_id)},
+        ) from error
+    return job
+
+
+@router.post(
+    "/{asset_id}/shots/detect",
+    response_model=JobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_shot_detection(
+    asset_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Job:
+    """Поставить детекцию планов и извлечение кадров в очередь."""
+    asset = await session.get(Asset, asset_id)
+    if asset is not None and (
+        asset.duration_ms is None or asset.width is None or asset.height is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Сначала необходимо выполнить технический анализ видео",
+        )
+    return await _start_asset_job(
+        asset_id,
+        JobType.SHOT_DETECTION,
+        "easy_cut.shot_detection",
+        session,
+    )
+
+
+@router.post(
+    "/{asset_id}/describe",
+    response_model=JobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_asset_description(
+    asset_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Job:
+    """Поставить описание планов локальной vision-моделью в очередь."""
+    if await session.get(Asset, asset_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Медиаактив не найден",
+        )
+    try:
+        get_vision_settings()
+    except VisionProviderNotConfiguredError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    has_frames = await session.scalar(
+        select(ShotFrame.id)
+        .join(Shot, Shot.id == ShotFrame.shot_id)
+        .where(Shot.asset_id == asset_id)
+        .limit(1)
+    )
+    if has_frames is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Сначала необходимо определить планы",
+        )
+    return await _start_asset_job(
+        asset_id,
+        JobType.ASSET_DESCRIPTION,
+        "easy_cut.asset_description",
+        session,
+    )
+
+
+@router.get("/{asset_id}/shots", response_model=ShotListResponse)
+async def list_asset_shots(
+    asset_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> ShotListResponse:
+    """Вернуть текущие планы, кадры и локальные описания актива."""
+    if await session.get(Asset, asset_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Медиаактив не найден",
+        )
+    shots = list(
+        await session.scalars(
+            select(Shot).where(Shot.asset_id == asset_id).order_by(Shot.sequence)
+        )
+    )
+    if not shots:
+        return ShotListResponse(asset_id=asset_id, items=[])
+
+    shot_ids = [shot.id for shot in shots]
+    frames = list(
+        await session.scalars(
+            select(ShotFrame)
+            .where(ShotFrame.shot_id.in_(shot_ids))
+            .order_by(ShotFrame.timestamp_ms)
+        )
+    )
+    descriptions = list(
+        await session.scalars(
+            select(ShotDescription).where(ShotDescription.shot_id.in_(shot_ids))
+        )
+    )
+    frames_by_shot: dict[UUID, list[ShotFrame]] = defaultdict(list)
+    for frame in frames:
+        frames_by_shot[frame.shot_id].append(frame)
+    descriptions_by_shot = {
+        description.shot_id: description for description in descriptions
+    }
+    return ShotListResponse(
+        asset_id=asset_id,
+        items=[
+            ShotResponse(
+                id=shot.id,
+                sequence=shot.sequence,
+                start_ms=shot.start_ms,
+                end_ms=shot.end_ms,
+                detector=shot.detector,
+                detector_version=shot.detector_version,
+                detector_settings=shot.detector_settings,
+                frames=[
+                    ShotFrameResponse.model_validate(frame)
+                    for frame in frames_by_shot.get(shot.id, [])
+                ],
+                description=(
+                    ShotDescriptionResponse.model_validate(
+                        descriptions_by_shot[shot.id]
+                    )
+                    if shot.id in descriptions_by_shot
+                    else None
+                ),
+            )
+            for shot in shots
+        ],
     )

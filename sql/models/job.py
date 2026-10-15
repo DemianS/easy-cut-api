@@ -18,7 +18,10 @@ class Job(TimestampMixin, Base):
     __tablename__ = "jobs"
     __table_args__ = (
         CheckConstraint(
-            "job_type IN ('library_scan', 'asset_probe')",
+            "job_type IN ("
+            "'library_scan', 'asset_probe', 'shot_detection', "
+            "'asset_description'"
+            ")",
             name="job_type",
         ),
         CheckConstraint("progress_current >= 0", name="progress_current"),

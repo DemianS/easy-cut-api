@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from sql.enums import AssetKind, AssetStatus
+from sql.enums import DescriptionStatus
 
 
 class AssetLocationResponse(BaseModel):
@@ -68,3 +69,59 @@ class AssetDetailResponse(AssetListItem):
     probe_metadata: dict | None
     last_attempt_at: datetime | None
     locations: list[AssetLocationResponse]
+
+
+class ShotFrameResponse(BaseModel):
+    """Ссылка на производный кадр плана."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    role: str
+    timestamp_ms: int
+    artifact_path: str
+    width: int
+    height: int
+
+
+class ShotDescriptionResponse(BaseModel):
+    """Проверенное структурированное описание плана."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    status: DescriptionStatus
+    summary: str | None
+    visible_objects: list[str] | None
+    action: str | None
+    setting: str | None
+    shot_type: str | None
+    camera_motion: str | None
+    visible_text: list[str] | None
+    uncertainty: str | None
+    language: str
+    provider: str | None
+    model: str | None
+    prompt_version: str | None
+    error_code: str | None
+    error_message: str | None
+
+
+class ShotResponse(BaseModel):
+    """План с временными границами и производными данными."""
+
+    id: UUID
+    sequence: int
+    start_ms: int
+    end_ms: int
+    detector: str
+    detector_version: str
+    detector_settings: dict
+    frames: list[ShotFrameResponse]
+    description: ShotDescriptionResponse | None
+
+
+class ShotListResponse(BaseModel):
+    """Текущий набор планов медиаактива."""
+
+    asset_id: UUID
+    items: list[ShotResponse]

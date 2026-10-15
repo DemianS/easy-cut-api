@@ -28,9 +28,11 @@ def create_celery_app() -> Celery:
         "easy_cut_worker",
         broker=build_broker_url(),
         include=(
+            "tasks.asset_description",
             "tasks.asset_probe",
             "tasks.diagnostics",
             "tasks.library_scan",
+            "tasks.shot_detection",
         ),
     )
     app.conf.update(

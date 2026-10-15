@@ -23,6 +23,16 @@ Dockerfile содержит два target:
 `GET /assets/{asset_id}` возвращает полные технические метаданные и все
 известные расположения файла.
 
+`POST /assets/{asset_id}/shots/detect` запускает PySceneDetect и извлечение
+средних кадров планов через FFmpeg. `GET /assets/{asset_id}/shots` возвращает
+интервалы `[start_ms, end_ms)`, кадры и доступные описания. Производные кадры
+хранятся под `ARTIFACTS_PATH`, исходное видео не изменяется.
+
+`POST /assets/{asset_id}/describe` описывает кадры через явно включённый
+локальный Ollama provider. По умолчанию `VISION_PROVIDER=disabled`, поэтому
+никакие кадры не отправляются модели. Для включения задайте
+`VISION_PROVIDER=ollama`, `OLLAMA_VISION_MODEL` и локальный `OLLAMA_BASE_URL`.
+
 `library_scan` проверяет, что путь из связанного `media_root` находится внутри
 `MEDIA_ROOT_PATH`, рекурсивно обнаруживает видео, изображения и аудио,
 идемпотентно обновляет `assets` и `asset_locations`, а также отмечает пропавшие

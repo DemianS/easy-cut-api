@@ -1,6 +1,8 @@
+from tasks.asset_description import asset_description
 from tasks.asset_probe import asset_probe
 from tasks.diagnostics import healthcheck
 from tasks.library_scan import library_scan
+from tasks.shot_detection import shot_detection
 from worker import build_broker_url, celery_app, create_celery_app
 
 
@@ -30,3 +32,10 @@ def test_worker_registers_library_scan_task() -> None:
 def test_worker_registers_asset_probe_task() -> None:
     assert asset_probe.name in celery_app.tasks
     assert asset_probe.name == "easy_cut.asset_probe"
+
+
+def test_worker_registers_shot_analysis_tasks() -> None:
+    assert shot_detection.name in celery_app.tasks
+    assert shot_detection.name == "easy_cut.shot_detection"
+    assert asset_description.name in celery_app.tasks
+    assert asset_description.name == "easy_cut.asset_description"
