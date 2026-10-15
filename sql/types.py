@@ -4,7 +4,7 @@ from enum import Enum as PythonEnum
 
 from sqlalchemy import Enum as SqlEnum
 
-from sql.enums import AssetStatus, DescriptionStatus, JobStatus
+from sql.enums import AssetStatus, DescriptionStatus, EmbeddingStatus, JobStatus
 
 
 def _enum_values(enum_class: type[PythonEnum]) -> list[str]:
@@ -29,6 +29,13 @@ job_status_type = SqlEnum(
 description_status_type = SqlEnum(
     DescriptionStatus,
     name="description_status",
+    values_callable=_enum_values,
+    validate_strings=True,
+)
+
+embedding_status_type = SqlEnum(
+    EmbeddingStatus,
+    name="embedding_status",
     values_callable=_enum_values,
     validate_strings=True,
 )

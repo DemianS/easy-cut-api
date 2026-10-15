@@ -1,9 +1,15 @@
 """Точка входа Celery worker."""
 
+import logging
 import os
 from urllib.parse import quote
 
 from celery import Celery
+
+logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger(__name__)
+logger.info("Worker started")
 
 DEFAULT_REDIS_HOST = "cache"
 DEFAULT_REDIS_PORT = 6379
@@ -29,6 +35,7 @@ def create_celery_app() -> Celery:
         broker=build_broker_url(),
         include=(
             "tasks.asset_description",
+            "tasks.asset_embedding",
             "tasks.asset_probe",
             "tasks.diagnostics",
             "tasks.library_scan",

@@ -14,8 +14,6 @@ RUN pip install --no-cache-dir uv
 COPY pyproject.toml README.md ./
 COPY uv.lock* ./
 
-COPY . .
-
 RUN uv sync --frozen --no-dev --no-install-project || uv sync --no-dev --no-install-project
 
 FROM python:3.12-slim AS worker

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 import os
 from pathlib import Path
 from uuid import UUID
@@ -14,6 +15,9 @@ from services.vision_provider import PROMPT_VERSION, get_vision_settings
 from sql.database import session_scope
 from sql.enums import AssetStatus, DescriptionStatus, JobStatus, JobType
 from sql.models import Asset, Job, Shot, ShotDescription, ShotFrame
+
+
+logger = logging.getLogger(__name__)
 
 MAX_ERROR_MESSAGE_LENGTH = 2000
 
@@ -236,8 +240,10 @@ async def execute_asset_description(
 ) -> dict:
     """Последовательно описать средний кадр каждого плана локальной моделью."""
     try:
+        logger.info(f"Execute asset description by {job_id}")
         settings = get_vision_settings()
         provider = OllamaVisionProvider(settings)
+        logger.debug(f"Init Ollama provider with settings: {settings}")
         asset_id, contexts, completed_result = await _prepare_descriptions(
             job_id,
             celery_task_id,
@@ -252,7 +258,9 @@ async def execute_asset_description(
             await _mark_description_running(context.shot_id)
             try:
                 image_path = _resolve_artifact_path(context.artifact_path)
+                logger.info(f"Describe artifact: {image_path}")
                 description, raw_response = provider.describe(image_path)
+                logger.info(f"Description artifact {context.artifact_path} completed")
                 await _store_description_success(
                     job_id,
                     context.shot_id,
@@ -262,6 +270,7 @@ async def execute_asset_description(
                 )
             except (VisionProviderError, AssetDescriptionError) as error:
                 failed_shot_ids.append(str(context.shot_id))
+                logger.error(f"Description artifact {context.shot_id} failed with: {repr(error)}")
                 await _store_description_failure(job_id, context.shot_id, error)
         return await _complete_descriptions(job_id, asset_id, failed_shot_ids)
     except Exception as error:

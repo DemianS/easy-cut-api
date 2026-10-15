@@ -2,7 +2,7 @@ name: easy-cut-api
 
 services:
   database:
-    image: postgres:18-bookworm
+    image: pgvector/pgvector:pg18-bookworm
     restart: unless-stopped
     env_file:
       - .env.database

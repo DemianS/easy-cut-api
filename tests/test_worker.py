@@ -1,4 +1,5 @@
 from tasks.asset_description import asset_description
+from tasks.asset_embedding import asset_embedding
 from tasks.asset_probe import asset_probe
 from tasks.diagnostics import healthcheck
 from tasks.library_scan import library_scan
@@ -39,3 +40,5 @@ def test_worker_registers_shot_analysis_tasks() -> None:
     assert shot_detection.name == "easy_cut.shot_detection"
     assert asset_description.name in celery_app.tasks
     assert asset_description.name == "easy_cut.asset_description"
+    assert asset_embedding.name in celery_app.tasks
+    assert asset_embedding.name == "easy_cut.asset_embedding"

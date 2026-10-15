@@ -11,6 +11,7 @@ def test_first_slice_tables_are_registered() -> None:
         "jobs",
         "media_roots",
         "shot_descriptions",
+        "shot_embeddings",
         "shot_frames",
         "shots",
         "users",
@@ -44,6 +45,7 @@ def test_status_columns_use_native_postgresql_enums() -> None:
     assets = Base.metadata.tables["assets"]
     jobs = Base.metadata.tables["jobs"]
     descriptions = Base.metadata.tables["shot_descriptions"]
+    embeddings = Base.metadata.tables["shot_embeddings"]
 
     assert isinstance(assets.c.status.type, Enum)
     assert assets.c.status.type.native_enum is True
@@ -54,6 +56,9 @@ def test_status_columns_use_native_postgresql_enums() -> None:
     assert isinstance(descriptions.c.status.type, Enum)
     assert descriptions.c.status.type.native_enum is True
     assert descriptions.c.status.type.name == "description_status"
+    assert isinstance(embeddings.c.status.type, Enum)
+    assert embeddings.c.status.type.native_enum is True
+    assert embeddings.c.status.type.name == "embedding_status"
 
 
 def test_shots_use_half_open_positive_intervals() -> None:

@@ -17,9 +17,12 @@ from schemas.assets import AssetLocationResponse
 from schemas.assets import ShotDescriptionResponse, ShotFrameResponse
 from schemas.assets import ShotListResponse, ShotResponse
 from schemas.jobs import JobResponse
+from services.embedding_provider import EmbeddingProviderNotConfiguredError
+from services.embedding_provider import get_embedding_settings
 from services.vision_provider import VisionProviderNotConfiguredError
 from services.vision_provider import get_vision_settings
-from sql.enums import AssetKind, AssetStatus, JobStatus, JobType
+from sql.enums import AssetKind, AssetStatus, DescriptionStatus
+from sql.enums import JobStatus, JobType
 from sql.models import Asset, AssetLocation, Job, Shot, ShotDescription, ShotFrame
 from worker import celery_app
 
@@ -353,6 +356,50 @@ async def start_asset_description(
         asset_id,
         JobType.ASSET_DESCRIPTION,
         "easy_cut.asset_description",
+        session,
+    )
+
+
+@router.post(
+    "/{asset_id}/embeddings",
+    response_model=JobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_asset_embedding(
+    asset_id: UUID,
+    session: AsyncSession = Depends(get_session),
+) -> Job:
+    """Поставить построение embeddings описанных планов в очередь."""
+    if await session.get(Asset, asset_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Медиаактив не найден",
+        )
+    try:
+        get_embedding_settings()
+    except EmbeddingProviderNotConfiguredError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    has_descriptions = await session.scalar(
+        select(ShotDescription.id)
+        .join(Shot, Shot.id == ShotDescription.shot_id)
+        .where(
+            Shot.asset_id == asset_id,
+            ShotDescription.status == DescriptionStatus.SUCCEEDED,
+        )
+        .limit(1)
+    )
+    if has_descriptions is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Сначала необходимо описать планы",
+        )
+    return await _start_asset_job(
+        asset_id,
+        JobType.ASSET_EMBEDDING,
+        "easy_cut.asset_embedding",
         session,
     )
 

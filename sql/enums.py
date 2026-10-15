@@ -33,9 +33,17 @@ class JobType(StrEnum):
     ASSET_PROBE = "asset_probe"
     SHOT_DETECTION = "shot_detection"
     ASSET_DESCRIPTION = "asset_description"
+    ASSET_EMBEDDING = "asset_embedding"
 
 
 class DescriptionStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class EmbeddingStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"

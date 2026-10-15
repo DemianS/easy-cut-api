@@ -33,6 +33,16 @@ Dockerfile содержит два target:
 никакие кадры не отправляются модели. Для включения задайте
 `VISION_PROVIDER=ollama`, `OLLAMA_VISION_MODEL` и локальный `OLLAMA_BASE_URL`.
 
+`POST /assets/{asset_id}/embeddings` запускает идемпотентное построение
+embeddings успешно описанных планов. По умолчанию provider отключён; для
+включения задайте `EMBEDDING_PROVIDER=ollama`, `OLLAMA_EMBEDDING_MODEL` и
+локальный `OLLAMA_BASE_URL`. Первая схема зафиксирована на 768 измерениях.
+
+`POST /search/shots` преобразует текстовый запрос в embedding и выполняет
+точный cosine search через pgvector. Ответ содержит `asset_id`, `shot_id` и
+полуоткрытый интервал `[start_ms, end_ms)`. HNSW пока намеренно не создаётся:
+его следует добавлять после измерений на реальной библиотеке.
+
 `library_scan` проверяет, что путь из связанного `media_root` находится внутри
 `MEDIA_ROOT_PATH`, рекурсивно обнаруживает видео, изображения и аудио,
 идемпотентно обновляет `assets` и `asset_locations`, а также отмечает пропавшие
@@ -46,7 +56,7 @@ Dockerfile содержит два target:
 размер кадра и параметры аудио. Таймаут задаётся через
 `FFPROBE_TIMEOUT_SECONDS`, по умолчанию — 120 секунд.
 
-## Локальная PostgreSQL
+## Локальная PostgreSQL + pgvector
 
 Создайте рабочий env-файл и запустите БД:
 
@@ -55,7 +65,8 @@ Copy-Item .env.database.example .env.database
 docker compose -f docker-compose.dev.yml up -d database
 ```
 
-PostgreSQL доступен на `127.0.0.1:5432`. Состояние хранится в отдельном Docker
+PostgreSQL доступен на `127.0.0.1:5432`. Образ уже содержит pgvector, а
+расширение `vector` включается миграцией. Состояние хранится в отдельном Docker
 volume `easy-cut-api_postgres-data` и не пересекается с корневым Compose.
 
 Миграции запускаются из каталога `api`:
