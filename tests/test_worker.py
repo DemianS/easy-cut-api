@@ -1,3 +1,4 @@
+from tasks.asset_probe import asset_probe
 from tasks.diagnostics import healthcheck
 from tasks.library_scan import library_scan
 from worker import build_broker_url, celery_app, create_celery_app
@@ -24,3 +25,8 @@ def test_worker_registers_diagnostic_task(monkeypatch) -> None:
 def test_worker_registers_library_scan_task() -> None:
     assert library_scan.name in celery_app.tasks
     assert library_scan.name == "easy_cut.library_scan"
+
+
+def test_worker_registers_asset_probe_task() -> None:
+    assert asset_probe.name in celery_app.tasks
+    assert asset_probe.name == "easy_cut.asset_probe"

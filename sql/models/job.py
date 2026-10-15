@@ -35,6 +35,7 @@ class Job(TimestampMixin, Base):
         ),
         Index("ix_jobs_status_created_at", "status", "created_at"),
         Index("ix_jobs_media_root_status", "media_root_id", "status"),
+        Index("ix_jobs_asset_status", "asset_id", "status"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -50,6 +51,9 @@ class Job(TimestampMixin, Base):
     )
     media_root_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("media_roots.id", ondelete="SET NULL"),
+    )
+    asset_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"),
     )
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),

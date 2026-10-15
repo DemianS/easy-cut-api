@@ -27,7 +27,11 @@ def create_celery_app() -> Celery:
     app = Celery(
         "easy_cut_worker",
         broker=build_broker_url(),
-        include=("tasks.diagnostics", "tasks.library_scan"),
+        include=(
+            "tasks.asset_probe",
+            "tasks.diagnostics",
+            "tasks.library_scan",
+        ),
     )
     app.conf.update(
         accept_content=("json",),

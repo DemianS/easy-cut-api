@@ -27,7 +27,15 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-only-include = ["main.py", "worker.py", "services", "tasks", "sql"]
+only-include = [
+    "main.py",
+    "worker.py",
+    "routers",
+    "schemas",
+    "services",
+    "tasks",
+    "sql",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"

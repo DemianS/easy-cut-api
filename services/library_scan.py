@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 import os
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
@@ -149,6 +149,7 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
         )
         assets_by_id = {asset.id: asset for asset in assets}
         seen_paths: set[str] = set()
+        probe_candidate_ids: set[UUID] = set()
 
         for index, discovered_file in enumerate(scan_result.files, start=1):
             seen_paths.add(discovered_file.normalized_path)
@@ -209,6 +210,12 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
                 )
                 counters[counter_name] += 1
 
+            if asset.status in {
+                AssetStatus.DISCOVERED.value,
+                AssetStatus.FAILED.value,
+            }:
+                probe_candidate_ids.add(asset.id)
+
             if index % PROGRESS_BATCH_SIZE == 0:
                 job.progress_current = index
                 job.heartbeat_at = _current_time()
@@ -226,6 +233,21 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
                 counters["missing"] += 1
 
         if missing_asset_ids:
+            probe_candidate_ids -= missing_asset_ids
+            cancelled_probe_jobs = list(
+                await session.scalars(
+                    select(Job).where(
+                        Job.asset_id.in_(missing_asset_ids),
+                        Job.job_type == JobType.ASSET_PROBE.value,
+                        Job.status == JobStatus.PENDING.value,
+                    )
+                )
+            )
+            cancelled_at = _current_time()
+            for probe_job in cancelled_probe_jobs:
+                probe_job.status = JobStatus.CANCELLED.value
+                probe_job.finished_at = cancelled_at
+                probe_job.heartbeat_at = cancelled_at
             available_asset_ids = set(
                 await session.scalars(
                     select(AssetLocation.asset_id).where(
@@ -237,9 +259,43 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
             for asset_id in missing_asset_ids - available_asset_ids:
                 assets_by_id[asset_id].status = AssetStatus.MISSING.value
 
+        active_probe_asset_ids = set(
+            await session.scalars(
+                select(Job.asset_id).where(
+                    Job.asset_id.in_(probe_candidate_ids),
+                    Job.job_type == JobType.ASSET_PROBE.value,
+                    Job.status.in_((JobStatus.PENDING.value, JobStatus.RUNNING.value)),
+                )
+            )
+        )
+        probe_job_ids: list[str] = []
+        for asset_id in sorted(
+            probe_candidate_ids - active_probe_asset_ids,
+            key=str,
+        ):
+            probe_job_id = uuid4()
+            session.add(
+                Job(
+                    id=probe_job_id,
+                    job_type=JobType.ASSET_PROBE.value,
+                    status=JobStatus.PENDING.value,
+                    media_root_id=job.media_root_id,
+                    asset_id=asset_id,
+                    created_by_user_id=job.created_by_user_id,
+                    celery_task_id=str(probe_job_id),
+                    progress_total=1,
+                )
+            )
+            probe_job_ids.append(str(probe_job_id))
+
         result = {
             **counters,
             "missing_detection_complete": missing_detection_complete,
+            "probe_job_ids": probe_job_ids,
+            "probe_jobs_created": len(probe_job_ids),
+            "probe_jobs_cancelled": (
+                len(cancelled_probe_jobs) if missing_asset_ids else 0
+            ),
             "issues": [
                 {
                     "relative_path": issue.relative_path,
@@ -256,6 +312,22 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
         job.heartbeat_at = finished_at
         job.finished_at = finished_at
         return result
+
+
+async def record_probe_dispatch_result(
+    scan_job_id: UUID,
+    dispatched_job_ids: list[str],
+    failed_job_ids: list[str],
+) -> None:
+    """Дополнить результат сканирования итогом отправки дочерних задач."""
+    async with session_scope() as session:
+        job = await session.get(Job, scan_job_id)
+        if job is None:
+            return
+        result = dict(job.result or {})
+        result["probe_jobs_dispatched"] = len(dispatched_job_ids)
+        result["probe_dispatch_failed_ids"] = failed_job_ids
+        job.result = result
 
 
 async def _mark_job_failed(job_id: UUID, error: Exception) -> None:

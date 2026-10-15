@@ -1,22 +1,31 @@
-FROM ghcr.io/astral-sh/uv:0.10.3 AS uv
-
-FROM python:3.12-slim AS base
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    PATH="/app/.venv/bin:$PATH"
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/app/venv/bin:$PATH"
 
 WORKDIR /app
 
-COPY --from=uv /uv /usr/local/bin/uv
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml README.md ./
+COPY uv.lock* ./
+
 COPY . .
 
-RUN uv sync --frozen --no-dev --no-editable
+RUN uv sync --frozen --no-dev --no-install-project || uv sync --no-dev --no-install-project
 
+FROM python:3.12-slim AS worker
 
-FROM base AS worker
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV UV_LINK_MODE=copy
+
+WORKDIR /app
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg \
@@ -24,14 +33,38 @@ RUN apt-get update \
     && groupadd --system easycut \
     && useradd --system --gid easycut --home-dir /app --no-create-home easycut
 
-USER easycut
+RUN groupadd --system user \
+    && useradd --system --gid user --home-dir /app --shell /usr/sbin/nologin user
+
+COPY --from=builder --chown=user:user /opt/venv /opt/venv
+COPY --chown=user:user . .
+
+USER user:user
 
 CMD ["celery", "-A", "worker:celery_app", "worker", "--loglevel=INFO"]
 
+FROM python:3.12-slim AS api
 
-FROM base AS api
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV UV_LINK_MODE=copy
+
+WORKDIR /app
+
+RUN groupadd --system user \
+    && useradd --system --gid user --home-dir /app --shell /usr/sbin/nologin user
+
+COPY --from=builder --chown=user:user /opt/venv /opt/venv
+COPY --chown=user:user . .
+
+RUN chmod +x /app/docker/entrypoint.sh \
+    && mkdir -p /app/logs \
+    && chown -R user:user /app/logs
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+USER user:user
 
+ENTRYPOINT ["sh", "/app/docker/entrypoint.sh"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

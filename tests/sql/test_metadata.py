@@ -26,3 +26,12 @@ def test_assets_support_all_required_media_kinds() -> None:
     assert "video" in media_kind_constraint
     assert "image" in media_kind_constraint
     assert "audio" in media_kind_constraint
+
+
+def test_probe_job_can_reference_asset() -> None:
+    jobs = Base.metadata.tables["jobs"]
+    asset_foreign_keys = {
+        foreign_key.target_fullname for foreign_key in jobs.c.asset_id.foreign_keys
+    }
+
+    assert asset_foreign_keys == {"assets.id"}
