@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 
+from routers.assets import router as assets_router
 from routers.jobs import router as jobs_router
 
 app = FastAPI(
@@ -9,6 +10,7 @@ app = FastAPI(
     version="0.1.0",
 )
 app.include_router(jobs_router)
+app.include_router(assets_router)
 
 
 @app.get("/health", tags=["system"])

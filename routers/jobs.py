@@ -1,7 +1,6 @@
 """Запуск и просмотр фоновых задач."""
 
 import asyncio
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -9,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dependencies import get_session
 from schemas.jobs import JobResponse
 from sql.enums import JobStatus, JobType
 from sql.models import Job, MediaRoot
@@ -16,14 +16,6 @@ from worker import celery_app
 
 router = APIRouter(tags=["jobs"])
 ACTIVE_JOB_STATUSES = (JobStatus.PENDING, JobStatus.RUNNING)
-
-
-async def get_session() -> AsyncIterator[AsyncSession]:
-    """Лениво создать DB-сессию, не связывая `/health` с конфигурацией БД."""
-    from sql.database import session_factory
-
-    async with session_factory() as session:
-        yield session
 
 
 @router.post(
