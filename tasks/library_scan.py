@@ -22,13 +22,13 @@ async def _record_probe_dispatch(
     dispatched_job_ids: list[str],
     failed_job_ids: list[str],
 ) -> None:
-    from services.asset_probe import mark_probe_dispatch_failed
+    from services.job_dispatcher import record_dispatch_failure
     from services.library_scan import record_probe_dispatch_result
     from sql.database import engine
 
     try:
         for failed_job_id in failed_job_ids:
-            await mark_probe_dispatch_failed(UUID(failed_job_id))
+            await record_dispatch_failure(UUID(failed_job_id))
         await record_probe_dispatch_result(
             scan_job_id,
             dispatched_job_ids,

@@ -279,6 +279,7 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
                     id=probe_job_id,
                     job_type=JobType.ASSET_PROBE.value,
                     status=JobStatus.PENDING,
+                    parent_job_id=job.parent_job_id,
                     media_root_id=job.media_root_id,
                     asset_id=asset_id,
                     created_by_user_id=job.created_by_user_id,
@@ -328,6 +329,11 @@ async def record_probe_dispatch_result(
         result["probe_jobs_dispatched"] = len(dispatched_job_ids)
         result["probe_dispatch_failed_ids"] = failed_job_ids
         job.result = result
+        dispatched_at = _current_time()
+        for dispatched_job_id in dispatched_job_ids:
+            probe_job = await session.get(Job, UUID(dispatched_job_id))
+            if probe_job is not None:
+                probe_job.last_dispatched_at = dispatched_at
 
 
 async def _mark_job_failed(job_id: UUID, error: Exception) -> None:

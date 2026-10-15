@@ -8,13 +8,12 @@ from uuid import UUID
 from sqlalchemy import select
 
 from services.embedding_provider import EmbeddingProviderError
-from services.embedding_provider import OllamaEmbeddingProvider
+from services.embedding_provider import TextEmbeddingProvider
 from services.embedding_provider import get_embedding_settings
 from sql.database import session_scope
 from sql.enums import AssetStatus, DescriptionStatus, EmbeddingStatus
 from sql.enums import JobStatus, JobType
 from sql.models import Asset, Job, Shot, ShotDescription, ShotEmbedding
-
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +106,7 @@ async def _prepare_embeddings(
             embedding = await session.scalar(
                 select(ShotEmbedding).where(
                     ShotEmbedding.shot_description_id == description.id,
-                    ShotEmbedding.provider == OllamaEmbeddingProvider.provider_name,
+                    ShotEmbedding.provider == TextEmbeddingProvider.provider_name,
                     ShotEmbedding.model == settings.model,
                     ShotEmbedding.text_version == TEXT_VERSION,
                 )
@@ -115,7 +114,7 @@ async def _prepare_embeddings(
             if embedding is None:
                 embedding = ShotEmbedding(
                     shot_description_id=description.id,
-                    provider=OllamaEmbeddingProvider.provider_name,
+                    provider=TextEmbeddingProvider.provider_name,
                     model=settings.model,
                     text_version=TEXT_VERSION,
                     dimension=settings.dimensions,
@@ -188,7 +187,14 @@ async def _store_embedding_failure(
     error: Exception,
 ) -> None:
     async with session_scope() as session:
-        logger.error(repr(error))
+        logger.warning(
+            "Построение embedding завершилось ошибкой",
+            extra={
+                "job_id": str(job_id),
+                "embedding_id": str(embedding_id),
+                "error_type": type(error).__name__,
+            },
+        )
         embedding = await session.get(ShotEmbedding, embedding_id)
         job = await session.get(Job, job_id)
         if embedding is not None:
@@ -264,7 +270,7 @@ async def execute_asset_embedding(
     """Идемпотентно построить embeddings описаний планов актива."""
     try:
         settings = get_embedding_settings()
-        provider = OllamaEmbeddingProvider(settings)
+        provider = TextEmbeddingProvider(settings)
         asset_id, contexts, reused, completed_result = await _prepare_embeddings(
             job_id,
             celery_task_id,

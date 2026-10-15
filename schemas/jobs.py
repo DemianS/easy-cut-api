@@ -16,6 +16,7 @@ class JobResponse(BaseModel):
     status: str
     media_root_id: UUID | None
     asset_id: UUID | None
+    parent_job_id: UUID | None
     progress_current: int
     progress_total: int | None
     result: dict | None
@@ -23,6 +24,8 @@ class JobResponse(BaseModel):
     error_message: str | None
     started_at: datetime | None
     heartbeat_at: datetime | None
+    last_dispatched_at: datetime | None
+    recovery_attempts: int
     finished_at: datetime | None
     created_at: datetime
     updated_at: datetime

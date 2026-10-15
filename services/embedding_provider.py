@@ -1,20 +1,13 @@
-"""Локальный provider текстовых embeddings через Ollama."""
+"""Настройки и предметная валидация текстовых embeddings через Ollama."""
 
 import ipaddress
-import json
-import logging
 import math
 import os
 from dataclasses import dataclass
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
-import requests
+from services.ollama_provider import OllamaProvider, OllamaProviderError
 from sql.models.shot_embedding import EMBEDDING_DIMENSIONS
-
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
@@ -88,13 +81,14 @@ def get_embedding_settings() -> EmbeddingSettings:
     return EmbeddingSettings(base_url, model, timeout_seconds, dimensions)
 
 
-class OllamaEmbeddingProvider:
-    """Адаптер Ollama `/api/embed` с проверкой размерности ответа."""
+class TextEmbeddingProvider:
+    """Проверить embedding общего Ollama provider перед сохранением."""
 
-    provider_name = "ollama"
+    provider_name = OllamaProvider.provider_name
 
     def __init__(self, settings: EmbeddingSettings) -> None:
         self.settings = settings
+        self.ollama = OllamaProvider(settings.base_url, settings.timeout_seconds)
 
     def embed(self, text: str) -> list[float]:
         normalized_text = text.strip()
@@ -102,36 +96,14 @@ class OllamaEmbeddingProvider:
             raise EmbeddingProviderError("Нельзя построить embedding пустого текста")
         if len(normalized_text) > MAX_EMBEDDING_TEXT_LENGTH:
             raise EmbeddingProviderError("Текст для embedding слишком длинный")
-
-        payload = {
-            "model": self.settings.model,
-            "input": normalized_text,
-            "dimensions": self.settings.dimensions,
-        }
-        
         try:
-            response = requests.post(
-                         f"{self.settings.base_url}/api/embed",
-                         json=payload,
-                         timeout=60
-                    )
-            result = response.json()
-            embeddings = result["embeddings"]
-            if not embeddings:
-                logger.error("Empty embedding response")
-                raise EmbeddingProviderError("Empty embedding")
-            vector = embeddings[0]
-        except (HTTPError, URLError, TimeoutError, OSError) as error:
-            logger.error(repr(error))
-            raise EmbeddingProviderError(
-                "Локальная embedding-модель недоступна"
-            ) from error
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-            logger.error(repr(error))
-            raise EmbeddingProviderError(
-                "Embedding-модель вернула ответ неверного формата"
-            ) from error
-
+            vector = self.ollama.embed(
+                model=self.settings.model,
+                text=normalized_text,
+                dimensions=self.settings.dimensions,
+            )
+        except OllamaProviderError as error:
+            raise EmbeddingProviderError(str(error)) from error
         if len(vector) != self.settings.dimensions:
             raise EmbeddingProviderError(
                 "Embedding-модель вернула неверную размерность вектора"

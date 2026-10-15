@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy import Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +27,13 @@ class ShotEmbedding(TimestampMixin, Base):
             name="shot_description_provider_model_text_version",
         ),
         CheckConstraint("dimension > 0", name="dimension"),
+        Index(
+            "ix_shot_embeddings_search_version",
+            "status",
+            "provider",
+            "model",
+            "text_version",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

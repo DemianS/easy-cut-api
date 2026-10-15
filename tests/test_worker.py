@@ -3,6 +3,7 @@ from tasks.asset_embedding import asset_embedding
 from tasks.asset_probe import asset_probe
 from tasks.diagnostics import healthcheck
 from tasks.library_scan import library_scan
+from tasks.job_dispatcher import reconcile_background_jobs
 from tasks.shot_detection import shot_detection
 from worker import build_broker_url, celery_app, create_celery_app
 
@@ -28,6 +29,7 @@ def test_worker_registers_diagnostic_task(monkeypatch) -> None:
 def test_worker_registers_library_scan_task() -> None:
     assert library_scan.name in celery_app.tasks
     assert library_scan.name == "easy_cut.library_scan"
+    assert reconcile_background_jobs.name in celery_app.tasks
 
 
 def test_worker_registers_asset_probe_task() -> None:

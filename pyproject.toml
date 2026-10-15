@@ -36,6 +36,7 @@ only-include = [
     "routers",
     "schemas",
     "services",
+    "prompts",
     "tasks",
     "sql",
 ]

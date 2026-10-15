@@ -59,7 +59,7 @@ def test_search_returns_reproducible_shot_interval(monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(
-        "routers.search.OllamaEmbeddingProvider.embed",
+        "routers.search.TextEmbeddingProvider.embed",
         lambda self, text: [0.0] * 768,
     )
     app.dependency_overrides[get_session] = _session_dependency(session)

@@ -11,7 +11,7 @@ from schemas.search import ShotSearchRequest, ShotSearchResponse, ShotSearchResu
 from services.asset_embedding import TEXT_VERSION
 from services.embedding_provider import EmbeddingProviderError
 from services.embedding_provider import EmbeddingProviderNotConfiguredError
-from services.embedding_provider import OllamaEmbeddingProvider
+from services.embedding_provider import TextEmbeddingProvider
 from services.embedding_provider import get_embedding_settings
 from sql.enums import EmbeddingStatus
 from sql.models import Shot, ShotDescription, ShotEmbedding
@@ -27,7 +27,7 @@ async def search_shots(
     """Найти планы по embedding текста и вернуть точные интервалы."""
     try:
         settings = get_embedding_settings()
-        provider = OllamaEmbeddingProvider(settings)
+        provider = TextEmbeddingProvider(settings)
         query_vector = await asyncio.to_thread(provider.embed, request.query)
     except EmbeddingProviderNotConfiguredError as error:
         raise HTTPException(

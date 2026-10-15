@@ -71,8 +71,12 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
         uncertainty=None,
     )
     monkeypatch.setattr(
-        "services.asset_description.OllamaVisionProvider.describe",
-        lambda self, image_path: (description_data, {"model": self.settings.model}),
+        "services.asset_description.VisionDescriptionProvider.describe",
+        lambda self, image_path: (
+            description_data,
+            {"model": self.settings.model},
+            "test-prompt:v1",
+        ),
     )
 
     user_id = uuid4()

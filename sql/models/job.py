@@ -19,12 +19,13 @@ class Job(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "job_type IN ("
-            "'library_scan', 'asset_probe', 'shot_detection', "
+            "'library_preparation', 'library_scan', 'asset_probe', 'shot_detection', "
             "'asset_description', 'asset_embedding'"
             ")",
             name="job_type",
         ),
         CheckConstraint("progress_current >= 0", name="progress_current"),
+        CheckConstraint("recovery_attempts >= 0", name="recovery_attempts"),
         CheckConstraint(
             "progress_total IS NULL OR progress_total >= 0",
             name="progress_total",
@@ -36,6 +37,7 @@ class Job(TimestampMixin, Base):
         Index("ix_jobs_status_created_at", "status", "created_at"),
         Index("ix_jobs_media_root_status", "media_root_id", "status"),
         Index("ix_jobs_asset_status", "asset_id", "status"),
+        Index("ix_jobs_parent_status", "parent_job_id", "status"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -58,6 +60,9 @@ class Job(TimestampMixin, Base):
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
     )
+    parent_job_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"),
+    )
     celery_task_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True)
     progress_current: Mapped[int] = mapped_column(
@@ -71,4 +76,10 @@ class Job(TimestampMixin, Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recovery_attempts: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

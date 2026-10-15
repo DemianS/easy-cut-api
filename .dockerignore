@@ -7,6 +7,7 @@ tests
 __pycache__
 .pytest_cache
 .pytest-*-tmp
+.pytest-tmp
 build
 dist
 *.py[cod]

@@ -1,15 +1,13 @@
 """Точка входа Celery worker."""
 
-import logging
 import os
 from urllib.parse import quote
 
 from celery import Celery
 
-logging.basicConfig(level=logging.INFO)
+from services.logging_config import configure_logging
 
-logger = logging.getLogger(__name__)
-logger.info("Worker started")
+configure_logging()
 
 DEFAULT_REDIS_HOST = "cache"
 DEFAULT_REDIS_PORT = 6379
@@ -39,6 +37,7 @@ def create_celery_app() -> Celery:
             "tasks.asset_probe",
             "tasks.diagnostics",
             "tasks.library_scan",
+            "tasks.job_dispatcher",
             "tasks.shot_detection",
         ),
     )
@@ -57,6 +56,12 @@ def create_celery_app() -> Celery:
         ),
         worker_prefetch_multiplier=1,
     )
+    app.conf.beat_schedule = {
+        "reconcile-background-jobs": {
+            "task": "easy_cut.reconcile_jobs",
+            "schedule": float(os.getenv("JOB_DISPATCH_INTERVAL_SECONDS", "15")),
+        }
+    }
     return app
 
 

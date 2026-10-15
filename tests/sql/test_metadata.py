@@ -41,6 +41,15 @@ def test_probe_job_can_reference_asset() -> None:
     assert asset_foreign_keys == {"assets.id"}
 
 
+def test_pipeline_job_can_reference_parent_job() -> None:
+    jobs = Base.metadata.tables["jobs"]
+    parent_foreign_keys = {
+        foreign_key.target_fullname for foreign_key in jobs.c.parent_job_id.foreign_keys
+    }
+
+    assert parent_foreign_keys == {"jobs.id"}
+
+
 def test_status_columns_use_native_postgresql_enums() -> None:
     assets = Base.metadata.tables["assets"]
     jobs = Base.metadata.tables["jobs"]

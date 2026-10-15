@@ -29,6 +29,7 @@ class JobStatus(StrEnum):
 
 
 class JobType(StrEnum):
+    LIBRARY_PREPARATION = "library_preparation"
     LIBRARY_SCAN = "library_scan"
     ASSET_PROBE = "asset_probe"
     SHOT_DETECTION = "shot_detection"

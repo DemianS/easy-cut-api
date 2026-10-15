@@ -1,16 +1,13 @@
 """Точка входа FastAPI-приложения."""
-import logging
 
 from fastapi import FastAPI
 
 from routers.assets import router as assets_router
 from routers.jobs import router as jobs_router
 from routers.search import router as search_router
+from services.logging_config import configure_logging
 
-logging.basicConfig(level=logging.INFO)
-
-logger = logging.getLogger(__name__)
-logger.info("API started")
+configure_logging()
 
 app = FastAPI(
     title="Easy Cut API",

@@ -1,8 +1,9 @@
 # Easy Cut API
 
-FastAPI-компонент и Celery worker. API запускает индексирование и показывает
-состояние фоновых задач, а worker выполняет `easy_cut.library_scan` и
-`easy_cut.asset_probe` с помощью FFmpeg/ffprobe.
+FastAPI-компонент, Celery worker и периодический диспетчер. API запускает
+индексирование и показывает состояние фоновых задач, worker выполняет этапы
+анализа, а Celery beat продвигает составные задачи и восстанавливает потерянные
+доставки.
 
 Репозиторий подключается к orchestration-проекту как Git submodule. Точка входа
 `main.py`, SQL-слой `sql/` и каталог миграций `migrations/` расположены
@@ -16,6 +17,11 @@ Dockerfile содержит два target:
 `POST /media-roots/{media_root_id}/scan` создаёт `library_scan` либо возвращает
 уже активную задачу для этого корня. `GET /jobs/{job_id}` возвращает её статус,
 прогресс, результат и диагностическую ошибку.
+
+`POST /media-roots/{media_root_id}/prepare` создаёт родительский
+`library_preparation` и одной командой запускает `scan → probe → shot_detection
+→ asset_description → asset_embedding`. Изображения и аудио проходят
+технический probe, но пока явно пропускаются на визуальных этапах.
 
 `GET /assets` возвращает страницу проиндексированной медиабиблиотеки. Доступны
 фильтры `status`, `media_kind`, `media_root_id`, `is_available`, поиск по пути
@@ -32,6 +38,10 @@ Dockerfile содержит два target:
 локальный Ollama provider. По умолчанию `VISION_PROVIDER=disabled`, поэтому
 никакие кадры не отправляются модели. Для включения задайте
 `VISION_PROVIDER=ollama`, `OLLAMA_VISION_MODEL` и локальный `OLLAMA_BASE_URL`.
+Общие `wait_for_ollama`, `pull_model`, `generate` и `embed` реализованы в одном
+`OllamaProvider` через `requests`. `generate` получает единый ответ без
+streaming для последующей строгой валидации. Текст prompt хранится отдельно в
+`prompts/shot_description.ru.txt`, а его версия вычисляется по содержимому.
 
 `POST /assets/{asset_id}/embeddings` запускает идемпотентное построение
 embeddings успешно описанных планов. По умолчанию provider отключён; для
@@ -56,6 +66,12 @@ embeddings успешно описанных планов. По умолчани
 размер кадра и параметры аудио. Таймаут задаётся через
 `FFPROBE_TIMEOUT_SECONDS`, по умолчанию — 120 секунд.
 
+Периодический `easy_cut.reconcile_jobs` не ждёт дочерние задачи внутри worker:
+каждый запуск делает один короткий идемпотентный проход. Интервал, grace period,
+таймаут heartbeat и предел восстановлений задаются переменными
+`JOB_DISPATCH_INTERVAL_SECONDS`, `JOB_PENDING_GRACE_SECONDS`,
+`JOB_HEARTBEAT_TIMEOUT_SECONDS` и `JOB_MAX_RECOVERY_ATTEMPTS`.
+
 ## Локальная PostgreSQL + pgvector
 
 Создайте рабочий env-файл и запустите БД:
@@ -78,7 +94,7 @@ uv run alembic upgrade head
 Для общей Compose-среды миграцию можно выполнить внутри API-контейнера:
 
 ```powershell
-docker compose -f ../docker-compose.dev.yml --profile app run --rm api `
+docker compose -f ../docker-compose.dev.yml run --rm api `
   uv run alembic upgrade head
 ```
 

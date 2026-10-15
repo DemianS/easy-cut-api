@@ -10,12 +10,11 @@ from uuid import UUID
 from sqlalchemy import select
 
 from services.shot_detection import DEFAULT_ARTIFACTS_PATH
-from services.vision_provider import OllamaVisionProvider, VisionProviderError
-from services.vision_provider import PROMPT_VERSION, get_vision_settings
+from services.vision_provider import VisionDescriptionProvider, VisionProviderError
+from services.vision_provider import get_vision_settings
 from sql.database import session_scope
 from sql.enums import AssetStatus, DescriptionStatus, JobStatus, JobType
 from sql.models import Asset, Job, Shot, ShotDescription, ShotFrame
-
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +129,10 @@ async def _mark_description_running(shot_id: UUID) -> None:
 async def _store_description_success(
     job_id: UUID,
     shot_id: UUID,
-    provider: OllamaVisionProvider,
+    provider: VisionDescriptionProvider,
     description_data,
     raw_response: dict,
+    prompt_version: str,
 ) -> None:
     async with session_scope() as session:
         description = await session.scalar(
@@ -153,7 +153,7 @@ async def _store_description_success(
         description.language = "ru"
         description.provider = provider.provider_name
         description.model = provider.settings.model
-        description.prompt_version = PROMPT_VERSION
+        description.prompt_version = prompt_version
         description.raw_response = raw_response
         description.error_code = None
         description.error_message = None
@@ -240,10 +240,12 @@ async def execute_asset_description(
 ) -> dict:
     """Последовательно описать средний кадр каждого плана локальной моделью."""
     try:
-        logger.info(f"Execute asset description by {job_id}")
+        logger.info(
+            "Запущено описание планов актива",
+            extra={"job_id": str(job_id)},
+        )
         settings = get_vision_settings()
-        provider = OllamaVisionProvider(settings)
-        logger.debug(f"Init Ollama provider with settings: {settings}")
+        provider = VisionDescriptionProvider(settings)
         asset_id, contexts, completed_result = await _prepare_descriptions(
             job_id,
             celery_task_id,
@@ -258,19 +260,35 @@ async def execute_asset_description(
             await _mark_description_running(context.shot_id)
             try:
                 image_path = _resolve_artifact_path(context.artifact_path)
-                logger.info(f"Describe artifact: {image_path}")
-                description, raw_response = provider.describe(image_path)
-                logger.info(f"Description artifact {context.artifact_path} completed")
+                description, raw_response, prompt_version = provider.describe(
+                    image_path
+                )
                 await _store_description_success(
                     job_id,
                     context.shot_id,
                     provider,
                     description,
                     raw_response,
+                    prompt_version,
+                )
+                logger.info(
+                    "Описание плана завершено",
+                    extra={
+                        "job_id": str(job_id),
+                        "shot_id": str(context.shot_id),
+                        "prompt_version": prompt_version,
+                    },
                 )
             except (VisionProviderError, AssetDescriptionError) as error:
                 failed_shot_ids.append(str(context.shot_id))
-                logger.error(f"Description artifact {context.shot_id} failed with: {repr(error)}")
+                logger.warning(
+                    "Описание плана завершилось ошибкой",
+                    extra={
+                        "job_id": str(job_id),
+                        "shot_id": str(context.shot_id),
+                        "error_type": type(error).__name__,
+                    },
+                )
                 await _store_description_failure(job_id, context.shot_id, error)
         return await _complete_descriptions(job_id, asset_id, failed_shot_ids)
     except Exception as error:

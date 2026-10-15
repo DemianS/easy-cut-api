@@ -278,13 +278,13 @@ async def _start_asset_job(
             args=[str(job_id)],
             task_id=str(job_id),
         )
+        job.last_dispatched_at = datetime.now(UTC)
+        await session.commit()
     except Exception as error:
         failed_at = datetime.now(UTC)
-        job.status = JobStatus.FAILED
         job.error_code = "queue_unavailable"
         job.error_message = "Не удалось отправить задачу в очередь"
-        job.finished_at = failed_at
-        job.heartbeat_at = failed_at
+        job.last_dispatched_at = failed_at
         await session.commit()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
