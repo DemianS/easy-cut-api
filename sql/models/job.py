@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sql.base import Base
 from sql.enums import JobStatus, JobType
 from sql.models.mixins import TimestampMixin
+from sql.types import job_status_type
 
 
 class Job(TimestampMixin, Base):
@@ -19,10 +20,6 @@ class Job(TimestampMixin, Base):
         CheckConstraint(
             "job_type IN ('library_scan', 'asset_probe')",
             name="job_type",
-        ),
-        CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'failed', " "'cancelled')",
-            name="status",
         ),
         CheckConstraint("progress_current >= 0", name="progress_current"),
         CheckConstraint(
@@ -44,9 +41,9 @@ class Job(TimestampMixin, Base):
         default=JobType.LIBRARY_SCAN.value,
         server_default=text("'library_scan'"),
     )
-    status: Mapped[str] = mapped_column(
-        String(32),
-        default=JobStatus.PENDING.value,
+    status: Mapped[JobStatus] = mapped_column(
+        job_status_type,
+        default=JobStatus.PENDING,
         server_default=text("'pending'"),
     )
     media_root_id: Mapped[UUID | None] = mapped_column(

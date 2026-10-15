@@ -12,16 +12,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sql.base import Base
 from sql.enums import AssetKind, AssetStatus
 from sql.models.mixins import TimestampMixin
+from sql.types import asset_status_type
 
 
 class Asset(TimestampMixin, Base):
     __tablename__ = "assets"
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('discovered', 'probing', 'indexed', 'analyzing', "
-            "'ready', 'failed', 'missing')",
-            name="status",
-        ),
         CheckConstraint(
             "media_kind IN ('unknown', 'video', 'image', 'audio')",
             name="media_kind",
@@ -56,9 +52,9 @@ class Asset(TimestampMixin, Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    status: Mapped[str] = mapped_column(
-        String(32),
-        default=AssetStatus.DISCOVERED.value,
+    status: Mapped[AssetStatus] = mapped_column(
+        asset_status_type,
+        default=AssetStatus.DISCOVERED,
         server_default=text("'discovered'"),
     )
     media_kind: Mapped[str] = mapped_column(

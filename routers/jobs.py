@@ -15,7 +15,7 @@ from sql.models import Job, MediaRoot
 from worker import celery_app
 
 router = APIRouter(tags=["jobs"])
-ACTIVE_JOB_STATUSES = (JobStatus.PENDING.value, JobStatus.RUNNING.value)
+ACTIVE_JOB_STATUSES = (JobStatus.PENDING, JobStatus.RUNNING)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -65,7 +65,7 @@ async def start_library_scan(
     job = Job(
         id=job_id,
         job_type=JobType.LIBRARY_SCAN.value,
-        status=JobStatus.PENDING.value,
+        status=JobStatus.PENDING,
         media_root_id=media_root_id,
         celery_task_id=str(job_id),
     )
@@ -82,7 +82,7 @@ async def start_library_scan(
         )
     except Exception as error:
         failed_at = datetime.now(UTC)
-        job.status = JobStatus.FAILED.value
+        job.status = JobStatus.FAILED
         job.error_code = "queue_unavailable"
         job.error_message = "Не удалось отправить задачу в очередь"
         job.finished_at = failed_at

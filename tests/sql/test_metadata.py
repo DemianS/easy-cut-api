@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint
+from sqlalchemy import CheckConstraint, Enum
 
 from sql.base import Base
 import sql.models  # noqa: F401
@@ -35,3 +35,15 @@ def test_probe_job_can_reference_asset() -> None:
     }
 
     assert asset_foreign_keys == {"assets.id"}
+
+
+def test_status_columns_use_native_postgresql_enums() -> None:
+    assets = Base.metadata.tables["assets"]
+    jobs = Base.metadata.tables["jobs"]
+
+    assert isinstance(assets.c.status.type, Enum)
+    assert assets.c.status.type.native_enum is True
+    assert assets.c.status.type.name == "asset_status"
+    assert isinstance(jobs.c.status.type, Enum)
+    assert jobs.c.status.type.native_enum is True
+    assert jobs.c.status.type.name == "job_status"

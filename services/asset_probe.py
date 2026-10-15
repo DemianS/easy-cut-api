@@ -81,9 +81,9 @@ async def _prepare_probe(
             raise AssetProbeJobNotFoundError("Задача анализа не найдена")
         if job.job_type != JobType.ASSET_PROBE.value:
             raise InvalidAssetProbeJobError("Задача имеет тип, отличный от asset_probe")
-        if job.status == JobStatus.SUCCEEDED.value:
+        if job.status == JobStatus.SUCCEEDED:
             return None, job.result or {}
-        if job.status == JobStatus.CANCELLED.value:
+        if job.status == JobStatus.CANCELLED:
             return None, {"status": JobStatus.CANCELLED.value}
         if job.asset_id is None or job.media_root_id is None:
             raise InvalidAssetProbeJobError(
@@ -108,7 +108,7 @@ async def _prepare_probe(
             raise MediaFileUnavailableError("Доступное расположение актива не найдено")
 
         current_time = _current_time()
-        job.status = JobStatus.RUNNING.value
+        job.status = JobStatus.RUNNING
         job.celery_task_id = celery_task_id or job.celery_task_id
         job.progress_current = 0
         job.progress_total = 1
@@ -118,7 +118,7 @@ async def _prepare_probe(
         job.started_at = current_time
         job.heartbeat_at = current_time
         job.finished_at = None
-        asset.status = AssetStatus.PROBING.value
+        asset.status = AssetStatus.PROBING
         asset.last_attempt_at = current_time
         asset.last_error_code = None
         asset.last_error_message = None
@@ -181,11 +181,11 @@ async def _store_probe_result(
         asset = await session.get(Asset, context.asset_id)
         if job is None or asset is None:
             raise AssetProbeJobNotFoundError("Задача или актив не найдены")
-        if job.status == JobStatus.CANCELLED.value:
-            asset.status = AssetStatus.DISCOVERED.value
+        if job.status == JobStatus.CANCELLED:
+            asset.status = AssetStatus.DISCOVERED
             return {"status": JobStatus.CANCELLED.value}
 
-        asset.status = AssetStatus.INDEXED.value
+        asset.status = AssetStatus.INDEXED
         asset.format_name = probe_result.format_name or asset.format_name
         asset.duration_ms = probe_result.duration_ms
         asset.width = probe_result.width
@@ -208,7 +208,7 @@ async def _store_probe_result(
             "has_audio": asset.audio_codec is not None,
         }
         finished_at = _current_time()
-        job.status = JobStatus.SUCCEEDED.value
+        job.status = JobStatus.SUCCEEDED
         job.progress_current = 1
         job.progress_total = 1
         job.result = result
@@ -221,14 +221,14 @@ async def _mark_probe_failed(job_id: UUID, error: Exception) -> None:
     async with session_scope() as session:
         job = await session.get(Job, job_id)
         if job is None or job.status in {
-            JobStatus.CANCELLED.value,
-            JobStatus.SUCCEEDED.value,
+            JobStatus.CANCELLED,
+            JobStatus.SUCCEEDED,
         }:
             return
         error_code = getattr(error, "error_code", "asset_probe_failed")
         error_message = str(error)[:MAX_ERROR_MESSAGE_LENGTH]
         finished_at = _current_time()
-        job.status = JobStatus.FAILED.value
+        job.status = JobStatus.FAILED
         job.error_code = error_code
         job.error_message = error_message
         job.heartbeat_at = finished_at
@@ -237,9 +237,9 @@ async def _mark_probe_failed(job_id: UUID, error: Exception) -> None:
             asset = await session.get(Asset, job.asset_id)
             if asset is not None:
                 asset.status = (
-                    AssetStatus.MISSING.value
+                    AssetStatus.MISSING
                     if isinstance(error, MediaFileUnavailableError)
-                    else AssetStatus.FAILED.value
+                    else AssetStatus.FAILED
                 )
                 asset.last_error_code = error_code
                 asset.last_error_message = error_message

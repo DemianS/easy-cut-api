@@ -46,7 +46,7 @@ def _current_time() -> datetime:
 
 def _reset_asset_after_file_change(asset: Asset) -> None:
     """Сбросить производные данные, ставшие недостоверными после изменения файла."""
-    asset.status = AssetStatus.DISCOVERED.value
+    asset.status = AssetStatus.DISCOVERED
     asset.checksum_algorithm = None
     asset.checksum = None
     asset.duplicate_of_asset_id = None
@@ -78,9 +78,9 @@ async def _prepare_job(
             raise InvalidLibraryScanJobError(
                 "Задача имеет тип, отличный от library_scan"
             )
-        if job.status == JobStatus.SUCCEEDED.value:
+        if job.status == JobStatus.SUCCEEDED:
             return "", job.result or {}
-        if job.status == JobStatus.CANCELLED.value:
+        if job.status == JobStatus.CANCELLED:
             return "", {"status": JobStatus.CANCELLED.value}
         if job.media_root_id is None:
             raise InvalidLibraryScanJobError("Для задачи не задан media_root_id")
@@ -92,7 +92,7 @@ async def _prepare_job(
             raise MediaRootDisabledError("Корень медиатеки отключён")
 
         current_time = _current_time()
-        job.status = JobStatus.RUNNING.value
+        job.status = JobStatus.RUNNING
         job.celery_task_id = celery_task_id
         job.progress_current = 0
         job.progress_total = None
@@ -157,7 +157,7 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
 
             if location is None:
                 asset = Asset(
-                    status=AssetStatus.DISCOVERED.value,
+                    status=AssetStatus.DISCOVERED,
                     media_kind=discovered_file.media_kind,
                     format_name=discovered_file.format_name,
                     mime_type=discovered_file.mime_type,
@@ -203,7 +203,7 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
                     asset.size_bytes = discovered_file.size_bytes
                     _reset_asset_after_file_change(asset)
                 elif became_available:
-                    asset.status = AssetStatus.DISCOVERED.value
+                    asset.status = AssetStatus.DISCOVERED
 
                 counter_name = (
                     "updated" if file_changed or became_available else "unchanged"
@@ -211,8 +211,8 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
                 counters[counter_name] += 1
 
             if asset.status in {
-                AssetStatus.DISCOVERED.value,
-                AssetStatus.FAILED.value,
+                AssetStatus.DISCOVERED,
+                AssetStatus.FAILED,
             }:
                 probe_candidate_ids.add(asset.id)
 
@@ -239,13 +239,13 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
                     select(Job).where(
                         Job.asset_id.in_(missing_asset_ids),
                         Job.job_type == JobType.ASSET_PROBE.value,
-                        Job.status == JobStatus.PENDING.value,
+                        Job.status == JobStatus.PENDING,
                     )
                 )
             )
             cancelled_at = _current_time()
             for probe_job in cancelled_probe_jobs:
-                probe_job.status = JobStatus.CANCELLED.value
+                probe_job.status = JobStatus.CANCELLED
                 probe_job.finished_at = cancelled_at
                 probe_job.heartbeat_at = cancelled_at
             available_asset_ids = set(
@@ -257,14 +257,14 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
                 )
             )
             for asset_id in missing_asset_ids - available_asset_ids:
-                assets_by_id[asset_id].status = AssetStatus.MISSING.value
+                assets_by_id[asset_id].status = AssetStatus.MISSING
 
         active_probe_asset_ids = set(
             await session.scalars(
                 select(Job.asset_id).where(
                     Job.asset_id.in_(probe_candidate_ids),
                     Job.job_type == JobType.ASSET_PROBE.value,
-                    Job.status.in_((JobStatus.PENDING.value, JobStatus.RUNNING.value)),
+                    Job.status.in_((JobStatus.PENDING, JobStatus.RUNNING)),
                 )
             )
         )
@@ -278,7 +278,7 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
                 Job(
                     id=probe_job_id,
                     job_type=JobType.ASSET_PROBE.value,
-                    status=JobStatus.PENDING.value,
+                    status=JobStatus.PENDING,
                     media_root_id=job.media_root_id,
                     asset_id=asset_id,
                     created_by_user_id=job.created_by_user_id,
@@ -307,7 +307,7 @@ async def _store_scan_result(job_id: UUID, scan_result: MediaScanResult) -> dict
         finished_at = _current_time()
         job.progress_current = len(scan_result.files)
         job.progress_total = len(scan_result.files)
-        job.status = JobStatus.SUCCEEDED.value
+        job.status = JobStatus.SUCCEEDED
         job.result = result
         job.heartbeat_at = finished_at
         job.finished_at = finished_at
@@ -335,12 +335,12 @@ async def _mark_job_failed(job_id: UUID, error: Exception) -> None:
     async with session_scope() as session:
         job = await session.get(Job, job_id)
         if job is None or job.status in {
-            JobStatus.CANCELLED.value,
-            JobStatus.SUCCEEDED.value,
+            JobStatus.CANCELLED,
+            JobStatus.SUCCEEDED,
         }:
             return
         finished_at = _current_time()
-        job.status = JobStatus.FAILED.value
+        job.status = JobStatus.FAILED
         job.error_code = getattr(error, "error_code", "library_scan_failed")
         job.error_message = str(error)[:MAX_ERROR_MESSAGE_LENGTH]
         job.heartbeat_at = finished_at

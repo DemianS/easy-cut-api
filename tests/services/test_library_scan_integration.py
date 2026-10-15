@@ -155,7 +155,7 @@ async def _run_library_scan_scenario(
                 )
             )
             assert len(cancelled_probe_jobs) == 1
-            assert cancelled_probe_jobs[0].status == JobStatus.CANCELLED.value
+            assert cancelled_probe_jobs[0].status == JobStatus.CANCELLED
     finally:
         async with session_scope() as session:
             asset_ids = set(

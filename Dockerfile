@@ -21,6 +21,7 @@ RUN uv sync --frozen --no-dev --no-install-project || uv sync --no-dev --no-inst
 FROM python:3.12-slim AS worker
 
 ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV UV_LINK_MODE=copy
@@ -46,6 +47,7 @@ CMD ["celery", "-A", "worker:celery_app", "worker", "--loglevel=INFO"]
 FROM python:3.12-slim AS api
 
 ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV UV_LINK_MODE=copy
