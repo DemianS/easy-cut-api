@@ -11,15 +11,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY --from=uv /uv /usr/local/bin/uv
-COPY pyproject.toml uv.lock README.md ./
-COPY easy_cut_api ./easy_cut_api
-COPY sql ./sql
-COPY alembic.ini ./
-COPY migrations ./migrations
+COPY . .
 
 RUN uv sync --frozen --no-dev --no-editable
 
 EXPOSE 8000
 
-CMD ["uvicorn", "easy_cut_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 

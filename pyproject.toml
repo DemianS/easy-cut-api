@@ -26,7 +26,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["easy_cut_api", "sql"]
+only-include = ["main.py", "sql"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
