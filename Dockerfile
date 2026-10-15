@@ -12,7 +12,7 @@ WORKDIR /app
 
 COPY --from=uv /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
+COPY easy_cut_api ./easy_cut_api
 COPY sql ./sql
 COPY alembic.ini ./
 COPY migrations ./migrations

@@ -2,7 +2,6 @@ from fastapi.testclient import TestClient
 
 from easy_cut_api.main import app
 
-
 client = TestClient(app)
 
 

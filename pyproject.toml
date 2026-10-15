@@ -26,11 +26,11 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/easy_cut_api", "sql"]
+packages = ["easy_cut_api", "sql"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["src"]
+pythonpath = ["."]
 testpaths = ["tests"]
 
 [dependency-groups]

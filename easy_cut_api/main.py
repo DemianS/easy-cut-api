@@ -2,7 +2,6 @@
 
 from fastapi import FastAPI
 
-
 app = FastAPI(
     title="Easy Cut API",
     version="0.1.0",
