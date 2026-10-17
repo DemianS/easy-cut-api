@@ -7,5 +7,6 @@ if [ "${RESTART_DB:-false}" = "true" ]; then
 fi
 
 alembic upgrade head
+python -m sql.bootstrap
 
 exec "$@"
