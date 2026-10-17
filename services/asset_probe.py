@@ -2,8 +2,10 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 import os
 from pathlib import Path
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import select
@@ -11,9 +13,12 @@ from sqlalchemy import select
 from services.media_probe import DEFAULT_FFPROBE_TIMEOUT_SECONDS
 from services.media_probe import MediaProbeResult, probe_media_file
 from services.media_scanner import resolve_media_root
+from services.logging_config import log_event, LogStatus
 from sql.database import session_scope
 from sql.enums import AssetStatus, JobStatus, JobType
 from sql.models import Asset, AssetLocation, Job, MediaRoot
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MEDIA_ROOT_PATH = "/media/library"
 MAX_ERROR_MESSAGE_LENGTH = 2000
@@ -272,9 +277,28 @@ async def execute_asset_probe(
     celery_task_id: str | None = None,
 ) -> dict:
     """Проверить версию файла, вызвать ffprobe и сохранить результат."""
+    started_at = monotonic()
+    log_event(
+        logger,
+        logging.INFO,
+        "asset_probe",
+        LogStatus.STARTED,
+        "Технический анализ медиа начат",
+        stage="prepare",
+        job_id=str(job_id),
+    )
     try:
         context, completed_result = await _prepare_probe(job_id, celery_task_id)
         if completed_result is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "asset_probe",
+                LogStatus.REUSED,
+                "Готовый результат технического анализа переиспользован",
+                stage="prepare",
+                job_id=str(job_id),
+            )
             return completed_result
         if context is None:
             raise InvalidAssetProbeJobError("Не удалось подготовить задачу анализа")
@@ -286,7 +310,32 @@ async def execute_asset_probe(
             timeout_seconds=_ffprobe_timeout_seconds(),
         )
         _validate_file_version(media_path, context)
-        return await _store_probe_result(job_id, context, probe_result)
+        result = await _store_probe_result(job_id, context, probe_result)
+        log_event(
+            logger,
+            logging.INFO,
+            "asset_probe",
+            LogStatus.SUCCEEDED,
+            "Технический анализ медиа успешно завершён",
+            stage="store",
+            job_id=str(job_id),
+            asset_id=str(context.asset_id),
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
+        return result
     except Exception as error:
         await _mark_probe_failed(job_id, error)
+        log_event(
+            logger,
+            logging.ERROR,
+            "asset_probe",
+            LogStatus.FAILED,
+            "Технический анализ медиа завершился ошибкой",
+            stage="execution",
+            exc_info=True,
+            job_id=str(job_id),
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+            error_type=type(error).__name__,
+            error_code=getattr(error, "error_code", "asset_probe_failed"),
+        )
         raise

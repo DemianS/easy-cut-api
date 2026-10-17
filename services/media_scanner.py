@@ -1,12 +1,17 @@
 """Безопасное обнаружение поддерживаемых медиафайлов."""
 
 from dataclasses import dataclass
+import logging
 import mimetypes
 import os
 from pathlib import Path
+from time import monotonic
 import unicodedata
 
+from services.logging_config import log_event, LogStatus
 from sql.enums import AssetKind
+
+logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = frozenset(
     {".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mts", ".webm"}
@@ -111,7 +116,28 @@ def discover_media_files(
     allowed_root_path: Path,
 ) -> MediaScanResult:
     """Рекурсивно найти медиа, не переходя по символическим ссылкам."""
-    media_root = resolve_media_root(root_path, allowed_root_path)
+    started_at = monotonic()
+    log_event(
+        logger,
+        logging.INFO,
+        "media_discovery",
+        LogStatus.STARTED,
+        "Обход файлов медиатеки начат",
+        stage="filesystem",
+    )
+    try:
+        media_root = resolve_media_root(root_path, allowed_root_path)
+    except MediaScanError as error:
+        log_event(
+            logger,
+            logging.ERROR,
+            "media_discovery",
+            LogStatus.FAILED,
+            "Подготовка обхода медиатеки завершилась ошибкой",
+            stage="root_validation",
+            error_type=type(error).__name__,
+        )
+        raise
     discovered_files: list[DiscoveredMediaFile] = []
     discovered_normalized_paths: set[str] = set()
     issues: list[ScanIssue] = []
@@ -191,8 +217,20 @@ def discover_media_files(
             )
 
     discovered_files.sort(key=lambda item: item.normalized_path)
-    return MediaScanResult(
+    result = MediaScanResult(
         files=tuple(discovered_files),
         skipped_count=skipped_count,
         issues=tuple(issues),
     )
+    log_event(
+        logger,
+        logging.INFO,
+        "media_discovery",
+        LogStatus.SUCCEEDED,
+        "Обход файлов медиатеки успешно завершён",
+        stage="filesystem",
+        total=len(result.files),
+        items_skipped=result.skipped_count,
+        elapsed_ms=round((monotonic() - started_at) * 1000),
+    )
+    return result

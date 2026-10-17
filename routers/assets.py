@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from datetime import UTC, datetime
 from enum import StrEnum
+import logging
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -19,6 +20,7 @@ from schemas.assets import ShotListResponse, ShotResponse
 from schemas.jobs import JobResponse
 from services.embedding_provider import EmbeddingProviderNotConfiguredError
 from services.embedding_provider import get_embedding_settings
+from services.logging_config import log_event, LogStatus
 from services.vision_provider import VisionProviderNotConfiguredError
 from services.vision_provider import get_vision_settings
 from sql.enums import AssetKind, AssetStatus, DescriptionStatus
@@ -26,6 +28,7 @@ from sql.enums import JobStatus, JobType
 from sql.models import Asset, AssetLocation, Job, Shot, ShotDescription, ShotFrame
 from worker import celery_app
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/assets", tags=["assets"])
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 50
@@ -220,6 +223,16 @@ async def _start_asset_job(
     task_name: str,
     session: AsyncSession,
 ) -> Job:
+    log_event(
+        logger,
+        logging.INFO,
+        "job_submission",
+        LogStatus.STARTED,
+        "Постановка задачи анализа актива начата",
+        stage=job_type.value,
+        job_type=job_type.value,
+        asset_id=str(asset_id),
+    )
     asset = await session.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(
@@ -257,6 +270,17 @@ async def _start_asset_job(
         .limit(1)
     )
     if active_job is not None:
+        log_event(
+            logger,
+            logging.INFO,
+            "job_submission",
+            LogStatus.REUSED,
+            "Возвращена уже активная задача анализа актива",
+            stage=job_type.value,
+            job_id=str(active_job.id),
+            job_type=active_job.job_type,
+            asset_id=str(asset_id),
+        )
         return active_job
 
     job_id = uuid4()
@@ -280,12 +304,35 @@ async def _start_asset_job(
         )
         job.last_dispatched_at = datetime.now(UTC)
         await session.commit()
+        log_event(
+            logger,
+            logging.INFO,
+            "job_submission",
+            LogStatus.DISPATCHED,
+            "Задача анализа актива отправлена в очередь",
+            stage=job_type.value,
+            job_id=str(job_id),
+            job_type=job_type.value,
+            asset_id=str(asset_id),
+        )
     except Exception as error:
         failed_at = datetime.now(UTC)
         job.error_code = "queue_unavailable"
         job.error_message = "Не удалось отправить задачу в очередь"
         job.last_dispatched_at = failed_at
         await session.commit()
+        log_event(
+            logger,
+            logging.WARNING,
+            "job_submission",
+            LogStatus.FAILED,
+            "Не удалось отправить задачу анализа актива в очередь",
+            stage=job_type.value,
+            job_id=str(job_id),
+            job_type=job_type.value,
+            asset_id=str(asset_id),
+            error_type=type(error).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"message": job.error_message, "job_id": str(job_id)},

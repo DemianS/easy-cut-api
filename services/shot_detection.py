@@ -2,13 +2,16 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 import os
 from pathlib import Path, PurePosixPath
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import delete, func, select
 
 from services.media_scanner import resolve_media_root
+from services.logging_config import log_event, LogStatus
 from services.shot_detector import DEFAULT_CONTENT_THRESHOLD
 from services.shot_detector import DEFAULT_FRAME_EXTRACTION_TIMEOUT_SECONDS
 from services.shot_detector import DEFAULT_MIN_SHOT_LENGTH_SECONDS
@@ -19,9 +22,12 @@ from sql.enums import AssetKind, AssetStatus, DescriptionStatus, JobStatus, JobT
 from sql.models import Asset, AssetLocation, Job, MediaRoot, Shot
 from sql.models import ShotDescription, ShotFrame
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MEDIA_ROOT_PATH = "/media/library"
 DEFAULT_ARTIFACTS_PATH = "/data/artifacts"
 MAX_ERROR_MESSAGE_LENGTH = 2000
+FRAME_PROGRESS_LOG_INTERVAL = 10
 
 
 class ShotDetectionJobError(RuntimeError):
@@ -322,9 +328,28 @@ async def execute_shot_detection(
     celery_task_id: str | None = None,
 ) -> dict:
     """Определить планы, сохранить интервалы и извлечь средние кадры."""
+    started_at = monotonic()
+    log_event(
+        logger,
+        logging.INFO,
+        "shot_detection",
+        LogStatus.STARTED,
+        "Детекция планов начата",
+        stage="prepare",
+        job_id=str(job_id),
+    )
     try:
         context, completed_result = await _prepare_detection(job_id, celery_task_id)
         if completed_result is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "shot_detection",
+                LogStatus.REUSED,
+                "Готовый результат детекции планов переиспользован",
+                stage="prepare",
+                job_id=str(job_id),
+            )
             return completed_result
         if context is None:
             raise InvalidShotDetectionJobError("Не удалось подготовить задачу")
@@ -342,6 +367,17 @@ async def execute_shot_detection(
             media_path,
             threshold=threshold,
             min_shot_length_seconds=min_length,
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "shot_detection",
+            LogStatus.PROGRESS,
+            "Границы планов определены",
+            stage="detect",
+            job_id=str(job_id),
+            asset_id=str(context.asset_id),
+            shots=len(boundaries),
         )
         detector, version, settings = detector_metadata(threshold, min_length)
         shots = await _store_shots(
@@ -378,7 +414,54 @@ async def execute_shot_detection(
                 frame.width,
                 frame.height,
             )
-        return await _complete_detection(job_id, context)
+            completed_frames = boundary.sequence + 1
+            progress_level = (
+                logging.INFO
+                if completed_frames % FRAME_PROGRESS_LOG_INTERVAL == 0
+                or completed_frames == len(shots)
+                else logging.DEBUG
+            )
+            log_event(
+                logger,
+                progress_level,
+                "shot_detection",
+                LogStatus.PROGRESS,
+                "Прогресс извлечения кадров обновлён",
+                stage="frame_extraction",
+                job_id=str(job_id),
+                asset_id=str(context.asset_id),
+                shot_id=str(shot_id),
+                completed=completed_frames,
+                total=len(shots),
+            )
+        result = await _complete_detection(job_id, context)
+        log_event(
+            logger,
+            logging.INFO,
+            "shot_detection",
+            LogStatus.SUCCEEDED,
+            "Детекция планов успешно завершена",
+            stage="store",
+            job_id=str(job_id),
+            asset_id=str(context.asset_id),
+            shots=result["shots"],
+            frames=result["frames"],
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
+        return result
     except Exception as error:
         await _mark_detection_failed(job_id, error)
+        log_event(
+            logger,
+            logging.ERROR,
+            "shot_detection",
+            LogStatus.FAILED,
+            "Детекция планов завершилась ошибкой",
+            stage="execution",
+            exc_info=True,
+            job_id=str(job_id),
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+            error_type=type(error).__name__,
+            error_code=getattr(error, "error_code", "shot_detection_failed"),
+        )
         raise

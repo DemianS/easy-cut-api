@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
+from services.logging_config import log_event, LogStatus
 from sql.database import session_scope
 from sql.enums import AssetKind, JobStatus, JobType
 from sql.models import Asset, AssetLocation, Job
@@ -110,6 +111,18 @@ def _new_child_job(
         celery_task_id=task_id,
         last_dispatched_at=now,
     )
+    log_event(
+        logger,
+        logging.INFO,
+        "pipeline_advance",
+        LogStatus.PROGRESS,
+        "Создана следующая задача pipeline",
+        stage="create_job",
+        job_id=str(job_id),
+        job_type=job_type.value,
+        asset_id=str(asset_id) if asset_id is not None else None,
+        media_root_id=str(parent.media_root_id),
+    )
     return job, DispatchRequest(job_id, task_id, TASK_NAMES[job_type])
 
 
@@ -155,6 +168,16 @@ async def _advance_pipeline(parent: Job) -> list[DispatchRequest]:
             pipeline.error_message = "Сканирование медиакорня завершилось ошибкой"
             pipeline.finished_at = now
             pipeline.heartbeat_at = now
+            log_event(
+                logger,
+                logging.ERROR,
+                "library_preparation",
+                LogStatus.FAILED,
+                "Подготовка медиатеки завершилась ошибкой сканирования",
+                stage="library_scan",
+                job_id=str(pipeline.id),
+                media_root_id=str(pipeline.media_root_id),
+            )
             return dispatches
 
         assets = list(
@@ -219,6 +242,20 @@ async def _advance_pipeline(parent: Job) -> list[DispatchRequest]:
             "assets_skipped_visual_analysis": skipped,
             "failed_asset_ids": failed_asset_ids,
         }
+        log_event(
+            logger,
+            logging.DEBUG,
+            "library_preparation",
+            LogStatus.PROGRESS,
+            "Прогресс подготовки медиатеки обновлён",
+            stage="assets",
+            job_id=str(pipeline.id),
+            media_root_id=str(pipeline.media_root_id),
+            completed=completed,
+            total=len(assets),
+            failed=len(failed_asset_ids),
+            items_skipped=skipped,
+        )
         if completed == len(assets):
             pipeline.finished_at = now
             if failed_asset_ids:
@@ -229,6 +266,21 @@ async def _advance_pipeline(parent: Job) -> list[DispatchRequest]:
                 pipeline.status = JobStatus.SUCCEEDED
                 pipeline.error_code = None
                 pipeline.error_message = None
+            final_status = LogStatus.FAILED if failed_asset_ids else LogStatus.SUCCEEDED
+            log_event(
+                logger,
+                logging.WARNING if failed_asset_ids else logging.INFO,
+                "library_preparation",
+                final_status,
+                "Подготовка медиатеки завершена",
+                stage="assets",
+                job_id=str(pipeline.id),
+                media_root_id=str(pipeline.media_root_id),
+                completed=completed,
+                total=len(assets),
+                failed=len(failed_asset_ids),
+                items_skipped=skipped,
+            )
     return dispatches
 
 
@@ -271,6 +323,17 @@ async def _recover_stalled_jobs() -> list[DispatchRequest]:
                 job.error_message = "Исчерпано число автоматических восстановлений"
                 job.finished_at = now
                 job.heartbeat_at = now
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "job_recovery",
+                    LogStatus.FAILED,
+                    "Исчерпаны попытки восстановления фоновой задачи",
+                    stage="attempt_limit",
+                    job_id=str(job.id),
+                    job_type=job.job_type,
+                    recovery_attempt=job.recovery_attempts,
+                )
                 continue
             job_type = JobType(job.job_type)
             task_name = TASK_NAMES.get(job_type)
@@ -285,19 +348,30 @@ async def _recover_stalled_jobs() -> list[DispatchRequest]:
             job.error_message = None
             job.finished_at = None
             dispatches.append(DispatchRequest(job.id, task_id, task_name))
-            logger.warning(
+            log_event(
+                logger,
+                logging.WARNING,
+                "job_recovery",
+                LogStatus.RETRYING,
                 "Фоновая задача поставлена на восстановление",
-                extra={
-                    "job_id": str(job.id),
-                    "job_type": job.job_type,
-                    "recovery_attempt": job.recovery_attempts,
-                },
+                stage="redispatch",
+                job_id=str(job.id),
+                job_type=job.job_type,
+                recovery_attempt=job.recovery_attempts,
             )
     return dispatches
 
 
 async def reconcile_jobs() -> list[DispatchRequest]:
     """Выполнить один неблокирующий проход диспетчера."""
+    log_event(
+        logger,
+        logging.DEBUG,
+        "job_reconcile",
+        LogStatus.STARTED,
+        "Проход диспетчера начат",
+        stage="inspect",
+    )
     dispatches = await _recover_stalled_jobs()
     async with session_scope() as session:
         pipelines = list(
@@ -310,6 +384,16 @@ async def reconcile_jobs() -> list[DispatchRequest]:
         )
     for pipeline in pipelines:
         dispatches.extend(await _advance_pipeline(pipeline))
+    log_event(
+        logger,
+        logging.INFO if dispatches else logging.DEBUG,
+        "job_reconcile",
+        LogStatus.SUCCEEDED,
+        "Проход диспетчера успешно завершён",
+        stage="dispatch",
+        dispatches=len(dispatches),
+        total=len(pipelines),
+    )
     return dispatches
 
 

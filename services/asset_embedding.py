@@ -3,12 +3,14 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import logging
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import select
 
 from services.embedding_provider import EmbeddingProviderError
 from services.embedding_provider import TextEmbeddingProvider
+from services.logging_config import log_event, LogStatus
 from services.embedding_provider import get_embedding_settings
 from sql.database import session_scope
 from sql.enums import AssetStatus, DescriptionStatus, EmbeddingStatus
@@ -187,13 +189,16 @@ async def _store_embedding_failure(
     error: Exception,
 ) -> None:
     async with session_scope() as session:
-        logger.warning(
+        log_event(
+            logger,
+            logging.WARNING,
+            "shot_embedding",
+            LogStatus.FAILED,
             "Построение embedding завершилось ошибкой",
-            extra={
-                "job_id": str(job_id),
-                "embedding_id": str(embedding_id),
-                "error_type": type(error).__name__,
-            },
+            stage="embed",
+            job_id=str(job_id),
+            embedding_id=str(embedding_id),
+            error_type=type(error).__name__,
         )
         embedding = await session.get(ShotEmbedding, embedding_id)
         job = await session.get(Job, job_id)
@@ -268,6 +273,16 @@ async def execute_asset_embedding(
     celery_task_id: str | None = None,
 ) -> dict:
     """Идемпотентно построить embeddings описаний планов актива."""
+    started_at = monotonic()
+    log_event(
+        logger,
+        logging.INFO,
+        "asset_embedding",
+        LogStatus.STARTED,
+        "Построение embeddings актива начато",
+        stage="prepare",
+        job_id=str(job_id),
+    )
     try:
         settings = get_embedding_settings()
         provider = TextEmbeddingProvider(settings)
@@ -276,6 +291,15 @@ async def execute_asset_embedding(
             celery_task_id,
         )
         if completed_result is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "asset_embedding",
+                LogStatus.REUSED,
+                "Готовые embeddings актива переиспользованы",
+                stage="prepare",
+                job_id=str(job_id),
+            )
             return completed_result
         if asset_id is None:
             raise InvalidAssetEmbeddingJobError("Не удалось подготовить задачу")
@@ -286,15 +310,53 @@ async def execute_asset_embedding(
             try:
                 vector = provider.embed(context.indexed_text)
                 await _store_embedding_success(job_id, context.embedding_id, vector)
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "shot_embedding",
+                    LogStatus.SUCCEEDED,
+                    "Embedding описания успешно сохранён",
+                    stage="embed",
+                    job_id=str(job_id),
+                    embedding_id=str(context.embedding_id),
+                )
             except EmbeddingProviderError as error:
                 failed_embedding_ids.append(str(context.embedding_id))
                 await _store_embedding_failure(job_id, context.embedding_id, error)
-        return await _complete_embeddings(
+        result = await _complete_embeddings(
             job_id,
             asset_id,
             reused,
             failed_embedding_ids,
         )
+        final_status = LogStatus.FAILED if result["failed"] else LogStatus.SUCCEEDED
+        log_event(
+            logger,
+            logging.WARNING if result["failed"] else logging.INFO,
+            "asset_embedding",
+            final_status,
+            "Построение embeddings актива завершено",
+            stage="store",
+            job_id=str(job_id),
+            asset_id=str(asset_id),
+            completed=result["indexed"],
+            failed=result["failed"],
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
+        return result
     except Exception as error:
         await _mark_job_failed(job_id, error)
+        log_event(
+            logger,
+            logging.ERROR,
+            "asset_embedding",
+            LogStatus.FAILED,
+            "Построение embeddings актива завершилось ошибкой",
+            stage="execution",
+            exc_info=True,
+            job_id=str(job_id),
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+            error_type=type(error).__name__,
+            error_code=getattr(error, "error_code", "asset_embedding_failed"),
+        )
         raise

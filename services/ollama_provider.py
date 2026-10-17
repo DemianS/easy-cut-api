@@ -8,6 +8,8 @@ from typing import Any
 
 import requests
 
+from services.logging_config import log_event, LogStatus
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 5
@@ -34,6 +36,15 @@ class OllamaProvider:
         sleep: Callable[[float], None] = time.sleep,
     ) -> bool:
         """Дождаться готовности API, не раскрывая тело ответа в логах."""
+        log_event(
+            logger,
+            logging.INFO,
+            "ollama_wait",
+            LogStatus.STARTED,
+            "Ожидание готовности Ollama начато",
+            stage="healthcheck",
+            total=max_retries,
+        )
         for attempt in range(1, max_retries + 1):
             try:
                 response = requests.get(
@@ -41,29 +52,51 @@ class OllamaProvider:
                     timeout=DEFAULT_HEALTH_TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()
-                logger.info(
-                    "Ollama готова",
-                    extra={"operation": "wait", "attempt": attempt},
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "ollama_wait",
+                    LogStatus.SUCCEEDED,
+                    "Ollama готова к обработке запросов",
+                    stage="healthcheck",
+                    attempt=attempt,
                 )
                 return True
             except requests.RequestException as error:
-                logger.warning(
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "ollama_wait",
+                    LogStatus.RETRYING,
                     "Ollama пока недоступна",
-                    extra={
-                        "operation": "wait",
-                        "attempt": attempt,
-                        "error_type": type(error).__name__,
-                    },
+                    stage="healthcheck",
+                    attempt=attempt,
+                    error_type=type(error).__name__,
                 )
             if attempt < max_retries:
                 sleep(delay_seconds)
+        log_event(
+            logger,
+            logging.ERROR,
+            "ollama_wait",
+            LogStatus.FAILED,
+            "Ожидание готовности Ollama завершилось ошибкой",
+            stage="healthcheck",
+            attempt=max_retries,
+        )
         return False
 
     def pull_model(self, model_name: str) -> None:
         """Загрузить модель, последовательно читая NDJSON-прогресс Ollama."""
-        logger.info(
-            "Начата загрузка модели Ollama",
-            extra={"operation": "pull", "model": model_name},
+        started_at = time.monotonic()
+        log_event(
+            logger,
+            logging.INFO,
+            "ollama_pull",
+            LogStatus.STARTED,
+            "Загрузка модели Ollama начата",
+            stage="download",
+            model=model_name,
         )
         try:
             with requests.post(
@@ -85,27 +118,47 @@ class OllamaProvider:
                     if event.get("error"):
                         raise OllamaProviderError("Ollama не смогла загрузить модель")
                     final_status = event.get("status")
-                    logger.debug(
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "ollama_pull",
+                        LogStatus.PROGRESS,
                         "Обновлён прогресс загрузки модели Ollama",
-                        extra={
-                            "operation": "pull",
-                            "model": model_name,
-                            "status": final_status,
-                            "completed": event.get("completed"),
-                            "total": event.get("total"),
-                        },
+                        stage="download",
+                        model=model_name,
+                        provider_status=final_status,
+                        completed=event.get("completed"),
+                        total=event.get("total"),
                     )
-        except (requests.RequestException, json.JSONDecodeError) as error:
+        except (
+            requests.RequestException,
+            json.JSONDecodeError,
+            OllamaProviderError,
+        ) as error:
+            log_event(
+                logger,
+                logging.ERROR,
+                "ollama_pull",
+                LogStatus.FAILED,
+                "Загрузка модели Ollama завершилась ошибкой",
+                stage="download",
+                model=model_name,
+                elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                error_type=type(error).__name__,
+            )
             raise OllamaProviderError(
                 "Ollama недоступна для загрузки модели"
             ) from error
-        logger.info(
-            "Модель Ollama загружена",
-            extra={
-                "operation": "pull",
-                "model": model_name,
-                "status": final_status,
-            },
+        log_event(
+            logger,
+            logging.INFO,
+            "ollama_pull",
+            LogStatus.SUCCEEDED,
+            "Загрузка модели Ollama успешно завершена",
+            stage="download",
+            model=model_name,
+            provider_status=final_status,
+            elapsed_ms=round((time.monotonic() - started_at) * 1000),
         )
 
     def generate(
@@ -119,6 +172,15 @@ class OllamaProvider:
     ) -> dict[str, Any]:
         """Получить целостный структурированный ответ через `/api/generate`."""
         started_at = time.monotonic()
+        log_event(
+            logger,
+            logging.INFO,
+            "ollama_generate",
+            LogStatus.STARTED,
+            "Генерация ответа Ollama начата",
+            stage="request",
+            model=model,
+        )
         payload = {
             "model": model,
             "prompt": prompt,
@@ -135,36 +197,72 @@ class OllamaProvider:
             )
             response.raise_for_status()
         except requests.RequestException as error:
-            logger.warning(
-                "Ошибка generate-запроса к Ollama",
-                extra={
-                    "operation": "generate",
-                    "model": model,
-                    "error_type": type(error).__name__,
-                },
+            log_event(
+                logger,
+                logging.ERROR,
+                "ollama_generate",
+                LogStatus.FAILED,
+                "Генерация ответа Ollama завершилась ошибкой",
+                stage="request",
+                model=model,
+                elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                error_type=type(error).__name__,
             )
             raise OllamaProviderError("Локальная модель Ollama недоступна") from error
         try:
             result = response.json()
         except ValueError as error:
+            log_event(
+                logger,
+                logging.ERROR,
+                "ollama_generate",
+                LogStatus.FAILED,
+                "Проверка ответа Ollama завершилась ошибкой",
+                stage="validation",
+                model=model,
+                elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                error_type=type(error).__name__,
+            )
             raise OllamaProviderError(
                 "Ollama вернула ответ неверного формата"
             ) from error
         if not isinstance(result, dict) or result.get("error"):
+            log_event(
+                logger,
+                logging.ERROR,
+                "ollama_generate",
+                LogStatus.FAILED,
+                "Проверка ответа Ollama завершилась ошибкой",
+                stage="validation",
+                model=model,
+                elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                error_type="InvalidResponse",
+            )
             raise OllamaProviderError("Ollama вернула ошибку генерации")
-        logger.info(
-            "Generate-запрос Ollama завершён",
-            extra={
-                "operation": "generate",
-                "model": model,
-                "elapsed_ms": round((time.monotonic() - started_at) * 1000),
-            },
+        log_event(
+            logger,
+            logging.INFO,
+            "ollama_generate",
+            LogStatus.SUCCEEDED,
+            "Генерация ответа Ollama успешно завершена",
+            stage="response",
+            model=model,
+            elapsed_ms=round((time.monotonic() - started_at) * 1000),
         )
         return result
 
     def embed(self, *, model: str, text: str, dimensions: int) -> list[Any]:
         """Получить один необработанный embedding через `/api/embed`."""
         started_at = time.monotonic()
+        log_event(
+            logger,
+            logging.INFO,
+            "ollama_embed",
+            LogStatus.STARTED,
+            "Построение embedding Ollama начато",
+            stage="request",
+            model=model,
+        )
         try:
             response = requests.post(
                 f"{self.base_url}/api/embed",
@@ -173,13 +271,16 @@ class OllamaProvider:
             )
             response.raise_for_status()
         except requests.RequestException as error:
-            logger.warning(
-                "Ошибка embed-запроса к Ollama",
-                extra={
-                    "operation": "embed",
-                    "model": model,
-                    "error_type": type(error).__name__,
-                },
+            log_event(
+                logger,
+                logging.ERROR,
+                "ollama_embed",
+                LogStatus.FAILED,
+                "Построение embedding Ollama завершилось ошибкой",
+                stage="request",
+                model=model,
+                elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                error_type=type(error).__name__,
             )
             raise OllamaProviderError("Локальная модель Ollama недоступна") from error
         try:
@@ -187,25 +288,41 @@ class OllamaProvider:
             embeddings = result["embeddings"]
             vector = embeddings[0]
         except (ValueError, KeyError, IndexError, TypeError) as error:
-            logger.warning(
-                "Некорректный embed-ответ Ollama",
-                extra={
-                    "operation": "embed",
-                    "model": model,
-                    "error_type": type(error).__name__,
-                },
+            log_event(
+                logger,
+                logging.ERROR,
+                "ollama_embed",
+                LogStatus.FAILED,
+                "Проверка ответа embedding Ollama завершилась ошибкой",
+                stage="validation",
+                model=model,
+                elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                error_type=type(error).__name__,
             )
             raise OllamaProviderError(
                 "Ollama вернула ответ неверного формата"
             ) from error
         if not isinstance(vector, list):
+            log_event(
+                logger,
+                logging.ERROR,
+                "ollama_embed",
+                LogStatus.FAILED,
+                "Проверка ответа embedding Ollama завершилась ошибкой",
+                stage="validation",
+                model=model,
+                elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                error_type="InvalidResponse",
+            )
             raise OllamaProviderError("Ollama вернула неверный embedding")
-        logger.info(
-            "Embed-запрос Ollama завершён",
-            extra={
-                "operation": "embed",
-                "model": model,
-                "elapsed_ms": round((time.monotonic() - started_at) * 1000),
-            },
+        log_event(
+            logger,
+            logging.INFO,
+            "ollama_embed",
+            LogStatus.SUCCEEDED,
+            "Построение embedding Ollama успешно завершено",
+            stage="response",
+            model=model,
+            elapsed_ms=round((time.monotonic() - started_at) * 1000),
         )
         return vector

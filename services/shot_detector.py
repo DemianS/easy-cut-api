@@ -1,12 +1,18 @@
 """Детекция планов и извлечение репрезентативных кадров."""
 
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 import subprocess
+from time import monotonic
 
 from scenedetect import ContentDetector, detect
 from scenedetect import __version__ as scenedetect_version
+
+from services.logging_config import log_event, LogStatus
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONTENT_THRESHOLD = 27.0
 DEFAULT_MIN_SHOT_LENGTH_SECONDS = 0.5
@@ -43,6 +49,15 @@ def detect_shots(
     min_shot_length_seconds: float = DEFAULT_MIN_SHOT_LENGTH_SECONDS,
 ) -> list[ShotBoundary]:
     """Найти непрерывные планы, включая видео без обнаруженных склеек."""
+    started_at = monotonic()
+    log_event(
+        logger,
+        logging.INFO,
+        "scene_detection",
+        LogStatus.STARTED,
+        "Поиск границ планов начат",
+        stage="pyscenedetect",
+    )
     try:
         scenes = detect(
             str(media_path),
@@ -54,6 +69,16 @@ def detect_shots(
             start_in_scene=True,
         )
     except Exception as error:
+        log_event(
+            logger,
+            logging.ERROR,
+            "scene_detection",
+            LogStatus.FAILED,
+            "Поиск границ планов завершился ошибкой",
+            stage="pyscenedetect",
+            error_type=type(error).__name__,
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
         raise ShotDetectionError("Не удалось определить границы планов") from error
 
     boundaries = []
@@ -65,6 +90,16 @@ def detect_shots(
         boundaries.append(ShotBoundary(sequence, start_ms, end_ms))
     if not boundaries:
         raise ShotDetectionError("Детектор не вернул ни одного плана")
+    log_event(
+        logger,
+        logging.INFO,
+        "scene_detection",
+        LogStatus.SUCCEEDED,
+        "Поиск границ планов успешно завершён",
+        stage="pyscenedetect",
+        shots=len(boundaries),
+        elapsed_ms=round((monotonic() - started_at) * 1000),
+    )
     return boundaries
 
 
@@ -103,6 +138,16 @@ def extract_representative_frame(
     timeout_seconds: int = DEFAULT_FRAME_EXTRACTION_TIMEOUT_SECONDS,
 ) -> ExtractedFrame:
     """Атомарно извлечь средний кадр плана через FFmpeg без shell."""
+    started_at = monotonic()
+    log_event(
+        logger,
+        logging.DEBUG,
+        "frame_extraction",
+        LogStatus.STARTED,
+        "Извлечение репрезентативного кадра начато",
+        stage="ffmpeg",
+        timeout_seconds=timeout_seconds,
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = destination.with_suffix(".tmp.jpg")
     command = [
@@ -132,11 +177,40 @@ def extract_representative_frame(
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         temporary_path.unlink(missing_ok=True)
+        log_event(
+            logger,
+            logging.ERROR,
+            "frame_extraction",
+            LogStatus.FAILED,
+            "Извлечение репрезентативного кадра завершилось ошибкой",
+            stage="ffmpeg",
+            error_type=type(error).__name__,
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
         raise ShotDetectionError("Не удалось запустить извлечение кадра") from error
     if completed_process.returncode != 0 or not temporary_path.is_file():
         temporary_path.unlink(missing_ok=True)
+        log_event(
+            logger,
+            logging.ERROR,
+            "frame_extraction",
+            LogStatus.FAILED,
+            "FFmpeg не создал репрезентативный кадр",
+            stage="ffmpeg",
+            return_code=completed_process.returncode,
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
         raise ShotDetectionError("FFmpeg не смог извлечь репрезентативный кадр")
 
     os.replace(temporary_path, destination)
     width, height = _scaled_dimensions(source_width, source_height)
+    log_event(
+        logger,
+        logging.DEBUG,
+        "frame_extraction",
+        LogStatus.SUCCEEDED,
+        "Извлечение репрезентативного кадра успешно завершено",
+        stage="ffmpeg",
+        elapsed_ms=round((monotonic() - started_at) * 1000),
+    )
     return ExtractedFrame(artifact_path, width, height)

@@ -1,17 +1,22 @@
 """Оркестрация задачи сканирования медиатеки через PostgreSQL."""
 
 from datetime import UTC, datetime
+import logging
 import os
 from pathlib import Path
+from time import monotonic
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
 from services.media_scanner import MediaScanResult
 from services.media_scanner import discover_media_files
+from services.logging_config import log_event, LogStatus
 from sql.database import session_scope
 from sql.enums import AssetStatus, JobStatus, JobType
 from sql.models import Asset, AssetLocation, Job, MediaRoot
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MEDIA_ROOT_PATH = "/media/library"
 PROGRESS_BATCH_SIZE = 100
@@ -358,12 +363,31 @@ async def execute_library_scan(
     celery_task_id: str | None = None,
 ) -> dict:
     """Выполнить полный проход library_scan и сохранить его состояние."""
+    started_at = monotonic()
+    log_event(
+        logger,
+        logging.INFO,
+        "library_scan",
+        LogStatus.STARTED,
+        "Сканирование медиатеки начато",
+        stage="prepare",
+        job_id=str(job_id),
+    )
     try:
         media_root_path, completed_result = await _prepare_job(
             job_id,
             celery_task_id,
         )
         if completed_result is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "library_scan",
+                LogStatus.REUSED,
+                "Готовый результат сканирования медиатеки переиспользован",
+                stage="prepare",
+                job_id=str(job_id),
+            )
             return completed_result
 
         allowed_root_path = Path(os.getenv("MEDIA_ROOT_PATH", DEFAULT_MEDIA_ROOT_PATH))
@@ -371,8 +395,49 @@ async def execute_library_scan(
             Path(media_root_path),
             allowed_root_path,
         )
+        log_event(
+            logger,
+            logging.INFO,
+            "library_scan",
+            LogStatus.PROGRESS,
+            "Обход медиатеки завершён",
+            stage="discovery",
+            job_id=str(job_id),
+            total=len(scan_result.files),
+            items_skipped=scan_result.skipped_count,
+        )
         await _set_progress_total(job_id, len(scan_result.files))
-        return await _store_scan_result(job_id, scan_result)
+        result = await _store_scan_result(job_id, scan_result)
+        log_event(
+            logger,
+            logging.INFO,
+            "library_scan",
+            LogStatus.SUCCEEDED,
+            "Сканирование медиатеки успешно завершено",
+            stage="store",
+            job_id=str(job_id),
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+            assets_created=result["created"],
+            assets_updated=result["updated"],
+            assets_unchanged=result["unchanged"],
+            assets_missing=result["missing"],
+            items_skipped=result["skipped"],
+            dispatches=result["probe_jobs_created"],
+        )
+        return result
     except Exception as error:
         await _mark_job_failed(job_id, error)
+        log_event(
+            logger,
+            logging.ERROR,
+            "library_scan",
+            LogStatus.FAILED,
+            "Сканирование медиатеки завершилось ошибкой",
+            stage="execution",
+            exc_info=True,
+            job_id=str(job_id),
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+            error_type=type(error).__name__,
+            error_code=getattr(error, "error_code", "library_scan_failed"),
+        )
         raise

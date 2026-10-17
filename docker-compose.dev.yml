@@ -4,12 +4,17 @@ services:
   database:
     image: pgvector/pgvector:pg18-bookworm
     restart: unless-stopped
+    entrypoint:
+      - /bin/bash
+      - /opt/easy-cut/database-entrypoint.sh
     env_file:
       - .env.database
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql
+      - ../logs/database:/var/log/easy-cut/database
+      - ../docker/database/entrypoint.sh:/opt/easy-cut/database-entrypoint.sh:ro
     healthcheck:
       test:
         - CMD-SHELL

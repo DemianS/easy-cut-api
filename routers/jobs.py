@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
+import logging
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_session
 from schemas.jobs import JobResponse
+from services.logging_config import log_event, LogStatus
 from services.embedding_provider import EmbeddingProviderNotConfiguredError
 from services.embedding_provider import get_embedding_settings
 from services.vision_provider import VisionProviderNotConfiguredError
@@ -18,6 +20,7 @@ from sql.enums import JobStatus, JobType
 from sql.models import Job, MediaRoot
 from worker import celery_app
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["jobs"])
 ACTIVE_JOB_STATUSES = (JobStatus.PENDING, JobStatus.RUNNING)
 
@@ -50,6 +53,15 @@ async def start_library_scan(
     session: AsyncSession = Depends(get_session),
 ) -> Job:
     """Создать или вернуть активную задачу сканирования медиакорня."""
+    log_event(
+        logger,
+        logging.INFO,
+        "job_submission",
+        LogStatus.STARTED,
+        "Постановка задачи сканирования начата",
+        stage="library_scan",
+        media_root_id=str(media_root_id),
+    )
     await _get_enabled_media_root(media_root_id, session)
 
     active_job = await session.scalar(
@@ -63,6 +75,17 @@ async def start_library_scan(
         .limit(1)
     )
     if active_job is not None:
+        log_event(
+            logger,
+            logging.INFO,
+            "job_submission",
+            LogStatus.REUSED,
+            "Возвращена уже активная задача сканирования",
+            stage="library_scan",
+            job_id=str(active_job.id),
+            job_type=active_job.job_type,
+            media_root_id=str(media_root_id),
+        )
         return active_job
 
     job_id = uuid4()
@@ -86,12 +109,35 @@ async def start_library_scan(
         )
         job.last_dispatched_at = datetime.now(UTC)
         await session.commit()
+        log_event(
+            logger,
+            logging.INFO,
+            "job_submission",
+            LogStatus.DISPATCHED,
+            "Задача сканирования отправлена в очередь",
+            stage="library_scan",
+            job_id=str(job_id),
+            job_type=job.job_type,
+            media_root_id=str(media_root_id),
+        )
     except Exception as error:
         failed_at = datetime.now(UTC)
         job.error_code = "queue_unavailable"
         job.error_message = "Не удалось отправить задачу в очередь"
         job.last_dispatched_at = failed_at
         await session.commit()
+        log_event(
+            logger,
+            logging.WARNING,
+            "job_submission",
+            LogStatus.FAILED,
+            "Не удалось отправить задачу сканирования в очередь",
+            stage="library_scan",
+            job_id=str(job_id),
+            job_type=job.job_type,
+            media_root_id=str(media_root_id),
+            error_type=type(error).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
@@ -113,6 +159,15 @@ async def start_library_preparation(
     session: AsyncSession = Depends(get_session),
 ) -> Job:
     """Запустить полную подготовку медиакорня одной составной задачей."""
+    log_event(
+        logger,
+        logging.INFO,
+        "job_submission",
+        LogStatus.STARTED,
+        "Постановка подготовки медиатеки начата",
+        stage="library_preparation",
+        media_root_id=str(media_root_id),
+    )
     await _get_enabled_media_root(media_root_id, session)
     try:
         get_vision_settings()
@@ -137,6 +192,17 @@ async def start_library_preparation(
         .limit(1)
     )
     if active_job is not None:
+        log_event(
+            logger,
+            logging.INFO,
+            "job_submission",
+            LogStatus.REUSED,
+            "Возвращена уже активная подготовка медиатеки",
+            stage="library_preparation",
+            job_id=str(active_job.id),
+            job_type=active_job.job_type,
+            media_root_id=str(media_root_id),
+        )
         return active_job
 
     job = Job(
@@ -153,11 +219,34 @@ async def start_library_preparation(
             celery_app.send_task,
             "easy_cut.reconcile_jobs",
         )
+        log_event(
+            logger,
+            logging.INFO,
+            "job_submission",
+            LogStatus.DISPATCHED,
+            "Подготовка медиатеки передана диспетчеру",
+            stage="library_preparation",
+            job_id=str(job.id),
+            job_type=job.job_type,
+            media_root_id=str(media_root_id),
+        )
     except Exception as error:
         job.error_code = "queue_unavailable"
         job.error_message = "Не удалось запустить диспетчер фоновых задач"
         job.last_dispatched_at = datetime.now(UTC)
         await session.commit()
+        log_event(
+            logger,
+            logging.WARNING,
+            "job_submission",
+            LogStatus.FAILED,
+            "Не удалось запустить диспетчер подготовки медиатеки",
+            stage="library_preparation",
+            job_id=str(job.id),
+            job_type=job.job_type,
+            media_root_id=str(media_root_id),
+            error_type=type(error).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"message": job.error_message, "job_id": str(job.id)},

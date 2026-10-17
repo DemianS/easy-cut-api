@@ -5,11 +5,13 @@ from datetime import UTC, datetime
 import logging
 import os
 from pathlib import Path
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import select
 
 from services.shot_detection import DEFAULT_ARTIFACTS_PATH
+from services.logging_config import log_event, LogStatus
 from services.vision_provider import VisionDescriptionProvider, VisionProviderError
 from services.vision_provider import get_vision_settings
 from sql.database import session_scope
@@ -239,10 +241,16 @@ async def execute_asset_description(
     celery_task_id: str | None = None,
 ) -> dict:
     """Последовательно описать средний кадр каждого плана локальной моделью."""
+    started_at = monotonic()
     try:
-        logger.info(
-            "Запущено описание планов актива",
-            extra={"job_id": str(job_id)},
+        log_event(
+            logger,
+            logging.INFO,
+            "asset_description",
+            LogStatus.STARTED,
+            "Описание планов актива начато",
+            stage="prepare",
+            job_id=str(job_id),
         )
         settings = get_vision_settings()
         provider = VisionDescriptionProvider(settings)
@@ -251,6 +259,15 @@ async def execute_asset_description(
             celery_task_id,
         )
         if completed_result is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "asset_description",
+                LogStatus.REUSED,
+                "Готовые описания планов переиспользованы",
+                stage="prepare",
+                job_id=str(job_id),
+            )
             return completed_result
         if asset_id is None:
             raise InvalidAssetDescriptionJobError("Не удалось подготовить задачу")
@@ -271,26 +288,60 @@ async def execute_asset_description(
                     raw_response,
                     prompt_version,
                 )
-                logger.info(
-                    "Описание плана завершено",
-                    extra={
-                        "job_id": str(job_id),
-                        "shot_id": str(context.shot_id),
-                        "prompt_version": prompt_version,
-                    },
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "shot_description",
+                    LogStatus.SUCCEEDED,
+                    "Описание плана успешно завершено",
+                    stage="describe",
+                    job_id=str(job_id),
+                    shot_id=str(context.shot_id),
+                    prompt_version=prompt_version,
                 )
             except (VisionProviderError, AssetDescriptionError) as error:
                 failed_shot_ids.append(str(context.shot_id))
-                logger.warning(
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "shot_description",
+                    LogStatus.FAILED,
                     "Описание плана завершилось ошибкой",
-                    extra={
-                        "job_id": str(job_id),
-                        "shot_id": str(context.shot_id),
-                        "error_type": type(error).__name__,
-                    },
+                    stage="describe",
+                    job_id=str(job_id),
+                    shot_id=str(context.shot_id),
+                    error_type=type(error).__name__,
                 )
                 await _store_description_failure(job_id, context.shot_id, error)
-        return await _complete_descriptions(job_id, asset_id, failed_shot_ids)
+        result = await _complete_descriptions(job_id, asset_id, failed_shot_ids)
+        final_status = LogStatus.FAILED if result["failed"] else LogStatus.SUCCEEDED
+        log_event(
+            logger,
+            logging.WARNING if result["failed"] else logging.INFO,
+            "asset_description",
+            final_status,
+            "Описание планов актива завершено",
+            stage="store",
+            job_id=str(job_id),
+            asset_id=str(asset_id),
+            completed=result["described"],
+            failed=result["failed"],
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
+        return result
     except Exception as error:
         await _mark_job_failed(job_id, error)
+        log_event(
+            logger,
+            logging.ERROR,
+            "asset_description",
+            LogStatus.FAILED,
+            "Описание планов актива завершилось ошибкой",
+            stage="execution",
+            exc_info=True,
+            job_id=str(job_id),
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+            error_type=type(error).__name__,
+            error_code=getattr(error, "error_code", "asset_description_failed"),
+        )
         raise

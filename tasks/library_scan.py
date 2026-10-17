@@ -1,9 +1,13 @@
 """Celery-задача индексирования файлов медиатеки."""
 
 import asyncio
+import logging
 from uuid import UUID
 
+from services.logging_config import log_event, LogStatus
 from worker import celery_app
+
+logger = logging.getLogger(__name__)
 
 
 async def _run_library_scan(job_id: UUID, celery_task_id: str | None) -> dict:
@@ -56,8 +60,19 @@ def library_scan(task, job_id: str) -> dict:
                 task_id=probe_job_id,
             )
             dispatched_job_ids.append(probe_job_id)
-        except Exception:
+        except Exception as error:
             failed_job_ids.append(probe_job_id)
+            log_event(
+                logger,
+                logging.WARNING,
+                "probe_dispatch",
+                LogStatus.PROGRESS,
+                "Не удалось отправить asset_probe в broker",
+                stage="broker",
+                job_id=probe_job_id,
+                job_type="asset_probe",
+                error_type=type(error).__name__,
+            )
 
     asyncio.run(
         _record_probe_dispatch(
@@ -68,4 +83,16 @@ def library_scan(task, job_id: str) -> dict:
     )
     result["probe_jobs_dispatched"] = len(dispatched_job_ids)
     result["probe_dispatch_failed_ids"] = failed_job_ids
+    final_status = LogStatus.FAILED if failed_job_ids else LogStatus.SUCCEEDED
+    log_event(
+        logger,
+        logging.WARNING if failed_job_ids else logging.INFO,
+        "probe_dispatch",
+        final_status,
+        "Отправка задач технического анализа завершена",
+        stage="broker",
+        job_id=str(parsed_job_id),
+        dispatches=len(dispatched_job_ids),
+        failed=len(failed_job_ids),
+    )
     return result

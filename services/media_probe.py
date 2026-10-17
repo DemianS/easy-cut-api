@@ -4,8 +4,14 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction
 import json
+import logging
 from pathlib import Path
 import subprocess
+from time import monotonic
+
+from services.logging_config import log_event, LogStatus
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_FFPROBE_TIMEOUT_SECONDS = 120
 MAX_DIAGNOSTIC_LENGTH = 2000
@@ -158,6 +164,16 @@ def probe_media_file(
     timeout_seconds: int = DEFAULT_FFPROBE_TIMEOUT_SECONDS,
 ) -> MediaProbeResult:
     """Запустить ffprobe без shell и вернуть проверенные метаданные."""
+    started_at = monotonic()
+    log_event(
+        logger,
+        logging.INFO,
+        "ffprobe",
+        LogStatus.STARTED,
+        "Технический анализ ffprobe начат",
+        stage="subprocess",
+        timeout_seconds=timeout_seconds,
+    )
     command = [
         "ffprobe",
         "-v",
@@ -183,19 +199,67 @@ def probe_media_file(
             timeout=timeout_seconds,
         )
     except FileNotFoundError as error:
+        log_event(
+            logger,
+            logging.ERROR,
+            "ffprobe",
+            LogStatus.FAILED,
+            "Запуск ffprobe завершился ошибкой",
+            stage="subprocess",
+            error_type=type(error).__name__,
+        )
         raise FfprobeUnavailableError("Исполняемый файл ffprobe не найден") from error
     except subprocess.TimeoutExpired as error:
+        log_event(
+            logger,
+            logging.ERROR,
+            "ffprobe",
+            LogStatus.FAILED,
+            "Технический анализ ffprobe превысил таймаут",
+            stage="subprocess",
+            timeout_seconds=timeout_seconds,
+            error_type=type(error).__name__,
+        )
         raise FfprobeTimeoutError("ffprobe превысил допустимое время работы") from error
 
     if completed_process.returncode != 0:
         diagnostic = completed_process.stderr.replace(str(media_path), "<media>")
         diagnostic = diagnostic.strip()[:MAX_DIAGNOSTIC_LENGTH]
+        log_event(
+            logger,
+            logging.ERROR,
+            "ffprobe",
+            LogStatus.FAILED,
+            "Технический анализ ffprobe завершился ошибкой",
+            stage="subprocess",
+            return_code=completed_process.returncode,
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
         raise FfprobeExecutionError(diagnostic or "ffprobe завершился с ошибкой")
 
     try:
         payload = json.loads(completed_process.stdout)
     except json.JSONDecodeError as error:
+        log_event(
+            logger,
+            logging.ERROR,
+            "ffprobe",
+            LogStatus.FAILED,
+            "Проверка ответа ffprobe завершилась ошибкой",
+            stage="validation",
+            error_type=type(error).__name__,
+        )
         raise InvalidProbeOutputError("ffprobe вернул некорректный JSON") from error
     if not isinstance(payload, dict):
         raise InvalidProbeOutputError("Корнем JSON ffprobe должен быть объект")
-    return parse_ffprobe_output(payload)
+    result = parse_ffprobe_output(payload)
+    log_event(
+        logger,
+        logging.INFO,
+        "ffprobe",
+        LogStatus.SUCCEEDED,
+        "Технический анализ ffprobe успешно завершён",
+        stage="validation",
+        elapsed_ms=round((monotonic() - started_at) * 1000),
+    )
+    return result
