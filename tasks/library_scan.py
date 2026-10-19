@@ -5,6 +5,7 @@ import logging
 from uuid import UUID
 
 from services.logging_config import log_event, LogStatus
+from tasks.base import DatabaseJobTask
 from worker import celery_app
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ async def _record_probe_dispatch(
         await engine.dispose()
 
 
-@celery_app.task(bind=True, name="easy_cut.library_scan")
+@celery_app.task(bind=True, base=DatabaseJobTask, name="easy_cut.library_scan")
 def library_scan(task, job_id: str) -> dict:
     """Просканировать корень, указанный в существующей записи jobs."""
     parsed_job_id = UUID(job_id)

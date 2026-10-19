@@ -3,6 +3,7 @@
 import asyncio
 from uuid import UUID
 
+from tasks.base import DatabaseJobTask
 from worker import celery_app
 
 
@@ -16,7 +17,7 @@ async def _run_shot_detection(job_id: UUID, celery_task_id: str | None) -> dict:
         await engine.dispose()
 
 
-@celery_app.task(bind=True, name="easy_cut.shot_detection")
+@celery_app.task(bind=True, base=DatabaseJobTask, name="easy_cut.shot_detection")
 def shot_detection(task, job_id: str) -> dict:
     """Определить планы и сохранить репрезентативные кадры видео."""
     return asyncio.run(

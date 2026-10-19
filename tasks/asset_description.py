@@ -3,6 +3,7 @@
 import asyncio
 from uuid import UUID
 
+from tasks.base import DatabaseJobTask
 from worker import celery_app
 
 
@@ -16,7 +17,7 @@ async def _run_asset_description(job_id: UUID, celery_task_id: str | None) -> di
         await engine.dispose()
 
 
-@celery_app.task(bind=True, name="easy_cut.asset_description")
+@celery_app.task(bind=True, base=DatabaseJobTask, name="easy_cut.asset_description")
 def asset_description(task, job_id: str) -> dict:
     """Описать планы актива через явно настроенную локальную vision-модель."""
     return asyncio.run(

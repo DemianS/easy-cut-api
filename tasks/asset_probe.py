@@ -3,6 +3,7 @@
 import asyncio
 from uuid import UUID
 
+from tasks.base import DatabaseJobTask
 from worker import celery_app
 
 
@@ -16,7 +17,7 @@ async def _run_asset_probe(job_id: UUID, celery_task_id: str | None) -> dict:
         await engine.dispose()
 
 
-@celery_app.task(bind=True, name="easy_cut.asset_probe")
+@celery_app.task(bind=True, base=DatabaseJobTask, name="easy_cut.asset_probe")
 def asset_probe(task, job_id: str) -> dict:
     """Проанализировать актив, указанный в существующей записи jobs."""
     return asyncio.run(

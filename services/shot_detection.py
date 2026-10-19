@@ -13,10 +13,17 @@ from sqlalchemy import delete, func, select
 from services.media_scanner import resolve_media_root
 from services.logging_config import log_event, LogStatus
 from services.shot_detector import DEFAULT_CONTENT_THRESHOLD
+from services.shot_detector import DEFAULT_FRAME_SAMPLE_INTERVAL_MS
+from services.shot_detector import DEFAULT_FRAME_SAMPLE_MIN_STEP_MS
 from services.shot_detector import DEFAULT_FRAME_EXTRACTION_TIMEOUT_SECONDS
+from services.shot_detector import DEFAULT_MAX_FRAMES_PER_SHOT
 from services.shot_detector import DEFAULT_MIN_SHOT_LENGTH_SECONDS
+from services.shot_detector import DEFAULT_SHORT_SHOT_THRESHOLD_MS
+from services.shot_detector import FRAME_SAMPLING_VERSION
+from services.shot_detector import FrameSample, FrameSamplingSettings
 from services.shot_detector import ShotBoundary, detect_shots, detector_metadata
 from services.shot_detector import extract_representative_frame
+from services.shot_detector import select_frame_samples
 from sql.database import session_scope
 from sql.enums import AssetKind, AssetStatus, DescriptionStatus, JobStatus, JobType
 from sql.models import Asset, AssetLocation, Job, MediaRoot, Shot
@@ -74,6 +81,30 @@ def _positive_int(name: str, default: int) -> int:
     if value <= 0:
         raise ShotDetectionJobError(f"{name} должен быть положительным")
     return value
+
+
+def _frame_sampling_settings() -> FrameSamplingSettings:
+    try:
+        return FrameSamplingSettings(
+            short_shot_threshold_ms=_positive_int(
+                "FRAME_SAMPLING_SHORT_SHOT_MS",
+                DEFAULT_SHORT_SHOT_THRESHOLD_MS,
+            ),
+            sample_interval_ms=_positive_int(
+                "FRAME_SAMPLING_INTERVAL_MS",
+                DEFAULT_FRAME_SAMPLE_INTERVAL_MS,
+            ),
+            min_step_ms=_positive_int(
+                "FRAME_SAMPLING_MIN_STEP_MS",
+                DEFAULT_FRAME_SAMPLE_MIN_STEP_MS,
+            ),
+            max_frames_per_shot=_positive_int(
+                "FRAME_SAMPLING_MAX_FRAMES",
+                DEFAULT_MAX_FRAMES_PER_SHOT,
+            ),
+        )
+    except ValueError as error:
+        raise ShotDetectionJobError(str(error)) from error
 
 
 async def _prepare_detection(
@@ -224,8 +255,13 @@ async def _store_shots(
         return stored
 
 
-def _artifact_destination(asset_id: UUID, shot_id: UUID) -> tuple[Path, str]:
-    relative_path = PurePosixPath("frames", str(asset_id), str(shot_id), "middle.jpg")
+def _artifact_destination(
+    asset_id: UUID,
+    shot_id: UUID,
+    sample: FrameSample,
+) -> tuple[Path, str]:
+    filename = f"{sample.timestamp_ms}_{sample.role}.jpg"
+    relative_path = PurePosixPath("frames", str(asset_id), str(shot_id), filename)
     root = Path(os.getenv("ARTIFACTS_PATH", DEFAULT_ARTIFACTS_PATH)).resolve()
     destination = (root / Path(*relative_path.parts)).resolve()
     try:
@@ -238,7 +274,8 @@ def _artifact_destination(asset_id: UUID, shot_id: UUID) -> tuple[Path, str]:
 async def _store_frame(
     job_id: UUID,
     shot_id: UUID,
-    boundary: ShotBoundary,
+    sample: FrameSample,
+    sampling_settings: dict[str, int],
     artifact_path: str,
     width: int,
     height: int,
@@ -247,21 +284,56 @@ async def _store_frame(
         frame = await session.scalar(
             select(ShotFrame).where(
                 ShotFrame.shot_id == shot_id,
-                ShotFrame.role == "middle",
+                ShotFrame.sequence == sample.sequence,
             )
         )
         if frame is None:
-            frame = ShotFrame(shot_id=shot_id, role="middle")
+            frame = ShotFrame(shot_id=shot_id, sequence=sample.sequence)
             session.add(frame)
-        frame.timestamp_ms = boundary.middle_ms
+        frame_changed = frame.id is not None and (
+            frame.timestamp_ms != sample.timestamp_ms
+            or frame.role != sample.role
+            or frame.selection_reason != sample.selection_reason
+            or frame.sampling_version != FRAME_SAMPLING_VERSION
+            or frame.sampling_settings != sampling_settings
+            or frame.artifact_path != artifact_path
+        )
+        if frame_changed:
+            await session.execute(
+                delete(ShotDescription).where(ShotDescription.shot_id == shot_id)
+            )
+        frame.timestamp_ms = sample.timestamp_ms
+        frame.role = sample.role
+        frame.selection_reason = sample.selection_reason
+        frame.sampling_version = FRAME_SAMPLING_VERSION
+        frame.sampling_settings = sampling_settings
         frame.artifact_path = artifact_path
         frame.width = width
         frame.height = height
         job = await session.get(Job, job_id)
         if job is None:
             raise InvalidShotDetectionJobError("Задача детекции исчезла")
-        job.progress_current = boundary.sequence + 1
+        job.progress_current += 1
         job.heartbeat_at = _current_time()
+
+
+async def _remove_obsolete_frames(shot_id: UUID, frame_count: int) -> None:
+    async with session_scope() as session:
+        obsolete_ids = list(
+            await session.scalars(
+                select(ShotFrame.id).where(
+                    ShotFrame.shot_id == shot_id,
+                    ShotFrame.sequence >= frame_count,
+                )
+            )
+        )
+        if obsolete_ids:
+            await session.execute(
+                delete(ShotDescription).where(ShotDescription.shot_id == shot_id)
+            )
+            await session.execute(
+                delete(ShotFrame).where(ShotFrame.id.in_(obsolete_ids))
+            )
 
 
 async def _complete_detection(job_id: UUID, context: DetectionContext) -> dict:
@@ -270,15 +342,16 @@ async def _complete_detection(job_id: UUID, context: DetectionContext) -> dict:
         asset = await session.get(Asset, context.asset_id)
         if job is None or asset is None:
             raise InvalidShotDetectionJobError("Задача или актив исчезли")
-        result = {
-            "asset_id": str(context.asset_id),
-            "shots": job.progress_current,
-            "frames": job.progress_current,
-        }
-        now = _current_time()
         shot_count = await session.scalar(
             select(func.count()).select_from(Shot).where(Shot.asset_id == asset.id)
         )
+        result = {
+            "asset_id": str(context.asset_id),
+            "shots": shot_count,
+            "frames": job.progress_current,
+            "sampling_version": FRAME_SAMPLING_VERSION,
+        }
+        now = _current_time()
         described_count = await session.scalar(
             select(func.count())
             .select_from(ShotDescription)
@@ -327,7 +400,7 @@ async def execute_shot_detection(
     job_id: UUID,
     celery_task_id: str | None = None,
 ) -> dict:
-    """Определить планы, сохранить интервалы и извлечь средние кадры."""
+    """Определить планы и извлечь детерминированный набор кадров."""
     started_at = monotonic()
     log_event(
         logger,
@@ -392,33 +465,51 @@ async def execute_shot_detection(
             "FRAME_EXTRACTION_TIMEOUT_SECONDS",
             DEFAULT_FRAME_EXTRACTION_TIMEOUT_SECONDS,
         )
-        for shot_id, boundary in shots:
-            destination, artifact_path = _artifact_destination(
-                context.asset_id,
-                shot_id,
-            )
-            frame = extract_representative_frame(
-                media_path,
-                destination,
-                timestamp_ms=boundary.middle_ms,
-                source_width=context.width,
-                source_height=context.height,
-                artifact_path=artifact_path,
-                timeout_seconds=timeout,
-            )
-            await _store_frame(
-                job_id,
-                shot_id,
-                boundary,
-                frame.artifact_path,
-                frame.width,
-                frame.height,
-            )
-            completed_frames = boundary.sequence + 1
+        sampling_settings = _frame_sampling_settings()
+        sampling_settings_data = sampling_settings.as_dict()
+        sampling_plan = [
+            (shot_id, boundary, select_frame_samples(boundary, sampling_settings))
+            for shot_id, boundary in shots
+        ]
+        async with session_scope() as session:
+            job = await session.get(Job, job_id)
+            if job is None:
+                raise InvalidShotDetectionJobError("Задача детекции исчезла")
+            job.progress_total = sum(len(samples) for _, _, samples in sampling_plan)
+            job.heartbeat_at = _current_time()
+        total_frames = sum(len(samples) for _, _, samples in sampling_plan)
+        completed_frames = 0
+        for shot_id, _boundary, samples in sampling_plan:
+            for sample in samples:
+                destination, artifact_path = _artifact_destination(
+                    context.asset_id,
+                    shot_id,
+                    sample,
+                )
+                frame = extract_representative_frame(
+                    media_path,
+                    destination,
+                    timestamp_ms=sample.timestamp_ms,
+                    source_width=context.width,
+                    source_height=context.height,
+                    artifact_path=artifact_path,
+                    timeout_seconds=timeout,
+                )
+                await _store_frame(
+                    job_id,
+                    shot_id,
+                    sample,
+                    sampling_settings_data,
+                    frame.artifact_path,
+                    frame.width,
+                    frame.height,
+                )
+                completed_frames += 1
+            await _remove_obsolete_frames(shot_id, len(samples))
             progress_level = (
                 logging.INFO
                 if completed_frames % FRAME_PROGRESS_LOG_INTERVAL == 0
-                or completed_frames == len(shots)
+                or completed_frames == total_frames
                 else logging.DEBUG
             )
             log_event(
@@ -432,7 +523,7 @@ async def execute_shot_detection(
                 asset_id=str(context.asset_id),
                 shot_id=str(shot_id),
                 completed=completed_frames,
-                total=len(shots),
+                total=total_frames,
             )
         result = await _complete_detection(job_id, context)
         log_event(

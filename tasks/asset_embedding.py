@@ -3,6 +3,7 @@
 import asyncio
 from uuid import UUID
 
+from tasks.base import DatabaseJobTask
 from worker import celery_app
 
 
@@ -16,7 +17,7 @@ async def _run_asset_embedding(job_id: UUID, celery_task_id: str | None) -> dict
         await engine.dispose()
 
 
-@celery_app.task(bind=True, name="easy_cut.asset_embedding")
+@celery_app.task(bind=True, base=DatabaseJobTask, name="easy_cut.asset_embedding")
 def asset_embedding(task, job_id: str) -> dict:
     """Построить embeddings успешно описанных планов актива."""
     return asyncio.run(

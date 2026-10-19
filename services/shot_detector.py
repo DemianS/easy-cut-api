@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import logging
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -18,6 +19,11 @@ DEFAULT_CONTENT_THRESHOLD = 27.0
 DEFAULT_MIN_SHOT_LENGTH_SECONDS = 0.5
 DEFAULT_FRAME_EXTRACTION_TIMEOUT_SECONDS = 120
 REPRESENTATIVE_FRAME_MAX_WIDTH = 1280
+FRAME_SAMPLING_VERSION = "multi-frame-v1"
+DEFAULT_SHORT_SHOT_THRESHOLD_MS = 1500
+DEFAULT_FRAME_SAMPLE_INTERVAL_MS = 5000
+DEFAULT_FRAME_SAMPLE_MIN_STEP_MS = 500
+DEFAULT_MAX_FRAMES_PER_SHOT = 8
 
 
 class ShotDetectionError(RuntimeError):
@@ -40,6 +46,105 @@ class ExtractedFrame:
     artifact_path: str
     width: int
     height: int
+    reused: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FrameSamplingSettings:
+    short_shot_threshold_ms: int = DEFAULT_SHORT_SHOT_THRESHOLD_MS
+    sample_interval_ms: int = DEFAULT_FRAME_SAMPLE_INTERVAL_MS
+    min_step_ms: int = DEFAULT_FRAME_SAMPLE_MIN_STEP_MS
+    max_frames_per_shot: int = DEFAULT_MAX_FRAMES_PER_SHOT
+
+    def __post_init__(self) -> None:
+        values = (
+            self.short_shot_threshold_ms,
+            self.sample_interval_ms,
+            self.min_step_ms,
+            self.max_frames_per_shot,
+        )
+        if any(value <= 0 for value in values):
+            raise ValueError("Параметры выборки кадров должны быть положительными")
+        if self.max_frames_per_shot < 3:
+            raise ValueError("Бюджет кадров обычного плана не может быть меньше трёх")
+
+    def as_dict(self) -> dict[str, int]:
+        """Вернуть сериализуемый снимок фактической конфигурации."""
+        return {
+            "short_shot_threshold_ms": self.short_shot_threshold_ms,
+            "sample_interval_ms": self.sample_interval_ms,
+            "min_step_ms": self.min_step_ms,
+            "max_frames_per_shot": self.max_frames_per_shot,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class FrameSample:
+    sequence: int
+    timestamp_ms: int
+    role: str
+    selection_reason: str
+
+
+def select_frame_samples(
+    boundary: ShotBoundary,
+    settings: FrameSamplingSettings,
+) -> list[FrameSample]:
+    """Детерминированно выбрать упорядоченные точки внутри полуинтервала."""
+    duration_ms = boundary.end_ms - boundary.start_ms
+    if duration_ms <= 0:
+        raise ShotDetectionError("Невозможно выбрать кадры пустого плана")
+    if duration_ms < settings.short_shot_threshold_ms:
+        return [
+            FrameSample(
+                sequence=0,
+                timestamp_ms=boundary.middle_ms,
+                role="single",
+                selection_reason="short_shot_middle",
+            )
+        ]
+
+    edge_margin_ms = min(250, max(1, duration_ms // 10))
+    first_ms = boundary.start_ms + edge_margin_ms
+    last_ms = boundary.end_ms - edge_margin_ms
+    usable_duration_ms = last_ms - first_ms
+    interval_count = math.ceil(duration_ms / settings.sample_interval_ms)
+    desired_count = max(3, interval_count + 1)
+    spacing_limited_count = usable_duration_ms // settings.min_step_ms + 1
+    if spacing_limited_count < 3:
+        return [
+            FrameSample(
+                sequence=0,
+                timestamp_ms=boundary.middle_ms,
+                role="single",
+                selection_reason="min_step_limited_middle",
+            )
+        ]
+    frame_count = min(
+        desired_count,
+        settings.max_frames_per_shot,
+        spacing_limited_count,
+    )
+
+    samples = []
+    for sequence in range(frame_count):
+        timestamp_ms = round(
+            first_ms + usable_duration_ms * sequence / (frame_count - 1)
+        )
+        if sequence == 0:
+            role = "start"
+            reason = "shot_start_context"
+        elif sequence == frame_count - 1:
+            role = "end"
+            reason = "shot_end_context"
+        elif frame_count % 2 and sequence == frame_count // 2:
+            role = "middle"
+            reason = "shot_middle_context"
+        else:
+            role = "sample"
+            reason = "long_shot_uniform_coverage"
+        samples.append(FrameSample(sequence, timestamp_ms, role, reason))
+    return samples
 
 
 def detect_shots(
@@ -137,7 +242,7 @@ def extract_representative_frame(
     artifact_path: str,
     timeout_seconds: int = DEFAULT_FRAME_EXTRACTION_TIMEOUT_SECONDS,
 ) -> ExtractedFrame:
-    """Атомарно извлечь средний кадр плана через FFmpeg без shell."""
+    """Идемпотентно и атомарно извлечь кадр через FFmpeg без shell."""
     started_at = monotonic()
     log_event(
         logger,
@@ -148,6 +253,19 @@ def extract_representative_frame(
         stage="ffmpeg",
         timeout_seconds=timeout_seconds,
     )
+    width, height = _scaled_dimensions(source_width, source_height)
+    if destination.is_file() and destination.stat().st_size > 0:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "frame_extraction",
+            LogStatus.REUSED,
+            "Существующий кадр переиспользован",
+            stage="artifact",
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
+        return ExtractedFrame(artifact_path, width, height, reused=True)
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = destination.with_suffix(".tmp.jpg")
     command = [
@@ -203,7 +321,6 @@ def extract_representative_frame(
         raise ShotDetectionError("FFmpeg не смог извлечь репрезентативный кадр")
 
     os.replace(temporary_path, destination)
-    width, height = _scaled_dimensions(source_width, source_height)
     log_event(
         logger,
         logging.DEBUG,

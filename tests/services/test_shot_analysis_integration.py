@@ -24,7 +24,8 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
     from services.asset_description import execute_asset_description
     from services.shot_detection import execute_shot_detection
     from services.shot_detector import ExtractedFrame, ShotBoundary
-    from services.vision_provider import VisionDescription, VisionSettings
+    from services.vision_provider import FrameObservation, VisionDescription
+    from services.vision_provider import VisionSettings
     from sql.database import engine, session_scope
     from sql.enums import AssetKind, AssetStatus, JobStatus, JobType
     from sql.models import Asset, AssetLocation, Job, MediaRoot, Shot
@@ -42,8 +43,8 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "services.shot_detection.detect_shots",
         lambda *args, **kwargs: [
-            ShotBoundary(0, 0, 1000),
-            ShotBoundary(1, 1000, 2000),
+            ShotBoundary(0, 0, 3000),
+            ShotBoundary(1, 3000, 6000),
         ],
     )
 
@@ -60,23 +61,36 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
         "services.asset_description.get_vision_settings",
         lambda: VisionSettings("http://ollama:11434", "vision-model", 30),
     )
-    description_data = VisionDescription(
-        summary="Человек работает с металлической деталью.",
-        visible_objects=["человек", "деталь"],
-        action="работает с деталью",
-        setting="мастерская",
-        shot_type="средний план",
-        camera_motion=None,
-        visible_text=[],
-        uncertainty=None,
-    )
+    description_summary = "Человек работает с металлической деталью."
+
+    def fake_describe(self, frames, **kwargs):
+        description_data = VisionDescription(
+            summary=description_summary,
+            visible_objects=["человек", "деталь"],
+            stable_objects=["человек", "деталь"],
+            action="работает с деталью",
+            setting="мастерская",
+            shot_type="средний план",
+            camera_motion=None,
+            object_motion=None,
+            visible_text=[],
+            uncertainty=None,
+            frame_observations=[
+                FrameObservation(
+                    frame_id=frame.id,
+                    timestamp_ms=frame.timestamp_ms,
+                    summary=description_summary,
+                    visible_objects=["человек", "деталь"],
+                    confidence=0.9,
+                )
+                for frame in frames
+            ],
+        )
+        return description_data, {"model": self.settings.model}, "test-prompt:v2"
+
     monkeypatch.setattr(
         "services.asset_description.VisionDescriptionProvider.describe",
-        lambda self, image_path: (
-            description_data,
-            {"model": self.settings.model},
-            "test-prompt:v1",
-        ),
+        fake_describe,
     )
 
     user_id = uuid4()
@@ -102,7 +116,7 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
                     status=AssetStatus.INDEXED,
                     media_kind=AssetKind.VIDEO.value,
                     size_bytes=file_stat.st_size,
-                    duration_ms=2000,
+                    duration_ms=6000,
                     width=640,
                     height=360,
                 )
@@ -164,6 +178,22 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
         assert first_shot_ids == second_shot_ids
         assert len(second_shot_ids) == 2
 
+        async with session_scope() as session:
+            frames = list(
+                await session.scalars(
+                    select(ShotFrame)
+                    .join(Shot, Shot.id == ShotFrame.shot_id)
+                    .where(Shot.asset_id == asset_id)
+                    .order_by(Shot.sequence, ShotFrame.sequence)
+                )
+            )
+        assert len(frames) == 6
+        assert [frame.role for frame in frames[:3]] == ["start", "middle", "end"]
+        assert all(frame.sampling_version == "multi-frame-v1" for frame in frames)
+        assert all(
+            frame.sampling_settings["max_frames_per_shot"] == 8 for frame in frames
+        )
+
         result = await execute_asset_description(
             description_job_id,
             "celery-description",
@@ -181,7 +211,16 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
         assert result["described"] == 2
         assert result["failed"] == 0
         assert asset.status == AssetStatus.READY
-        assert {item.summary for item in descriptions} == {description_data.summary}
+        assert {item.summary for item in descriptions} == {description_summary}
+        assert all(len(item.frame_observations) == 3 for item in descriptions)
+        assert all(
+            item.schema_version == "shot-temporal-description-v1"
+            for item in descriptions
+        )
+        assert all(
+            item.sampling_settings["short_shot_threshold_ms"] == 1500
+            for item in descriptions
+        )
     finally:
         async with session_scope() as session:
             await session.execute(

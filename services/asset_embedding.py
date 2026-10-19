@@ -19,7 +19,7 @@ from sql.models import Asset, Job, Shot, ShotDescription, ShotEmbedding
 
 logger = logging.getLogger(__name__)
 
-TEXT_VERSION = "shot-description-text-v1"
+TEXT_VERSION = "shot-temporal-description-text-v2"
 MAX_ERROR_MESSAGE_LENGTH = 2000
 
 
@@ -50,6 +50,7 @@ def build_indexed_text(description: ShotDescription) -> str:
         ("Обстановка", description.setting),
         ("Тип плана", description.shot_type),
         ("Движение камеры", description.camera_motion),
+        ("Движение объектов", description.object_motion),
     )
     for label, value in fields:
         if value:
@@ -57,6 +58,17 @@ def build_indexed_text(description: ShotDescription) -> str:
     if description.visible_text:
         visible_text = ", ".join(item.strip() for item in description.visible_text)
         sections.append(f"Текст в кадре: {visible_text}")
+    if description.stable_objects:
+        stable_objects = ", ".join(item.strip() for item in description.stable_objects)
+        sections.append(f"Устойчивые объекты: {stable_objects}")
+    if description.temporal_events:
+        for event in description.temporal_events:
+            event_text = str(event.get("description", "")).strip()
+            if event_text:
+                sections.append(
+                    "Событие "
+                    f"[{event.get('start_ms')}, {event.get('end_ms')}): {event_text}"
+                )
     return "\n".join(section for section in sections if section).strip()
 
 

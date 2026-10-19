@@ -34,6 +34,15 @@ class ShotDescription(TimestampMixin, Base):
     camera_motion: Mapped[str | None] = mapped_column(String(100))
     visible_text: Mapped[list | None] = mapped_column(JSONB)
     uncertainty: Mapped[str | None] = mapped_column(Text)
+    stable_objects: Mapped[list | None] = mapped_column(JSONB)
+    object_motion: Mapped[str | None] = mapped_column(Text)
+    frame_observations: Mapped[list | None] = mapped_column(JSONB)
+    frame_transitions: Mapped[list | None] = mapped_column(JSONB)
+    temporal_events: Mapped[list | None] = mapped_column(JSONB)
+    field_evidence: Mapped[list | None] = mapped_column(JSONB)
+    schema_version: Mapped[str | None] = mapped_column(String(100))
+    sampling_version: Mapped[str | None] = mapped_column(String(100))
+    sampling_settings: Mapped[dict | None] = mapped_column(JSONB)
     language: Mapped[str] = mapped_column(
         String(16),
         default="ru",

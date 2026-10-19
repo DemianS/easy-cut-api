@@ -475,7 +475,7 @@ async def list_asset_shots(
         await session.scalars(
             select(ShotFrame)
             .where(ShotFrame.shot_id.in_(shot_ids))
-            .order_by(ShotFrame.timestamp_ms)
+            .order_by(ShotFrame.shot_id, ShotFrame.sequence)
         )
     )
     descriptions = list(

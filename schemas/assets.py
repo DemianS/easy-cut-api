@@ -77,8 +77,12 @@ class ShotFrameResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    sequence: int
     role: str
     timestamp_ms: int
+    selection_reason: str
+    sampling_version: str
+    sampling_settings: dict
     artifact_path: str
     width: int
     height: int
@@ -92,12 +96,21 @@ class ShotDescriptionResponse(BaseModel):
     status: DescriptionStatus
     summary: str | None
     visible_objects: list[str] | None
+    stable_objects: list[str] | None
     action: str | None
     setting: str | None
     shot_type: str | None
     camera_motion: str | None
+    object_motion: str | None
     visible_text: list[str] | None
     uncertainty: str | None
+    frame_observations: list[dict] | None
+    frame_transitions: list[dict] | None
+    temporal_events: list[dict] | None
+    field_evidence: list[dict] | None
+    schema_version: str | None
+    sampling_version: str | None
+    sampling_settings: dict | None
     language: str
     provider: str | None
     model: str | None

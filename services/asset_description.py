@@ -8,11 +8,12 @@ from pathlib import Path
 from time import monotonic
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from services.shot_detection import DEFAULT_ARTIFACTS_PATH
 from services.logging_config import log_event, LogStatus
 from services.vision_provider import VisionDescriptionProvider, VisionProviderError
+from services.vision_provider import SHOT_DESCRIPTION_SCHEMA_VERSION, VisionFrame
 from services.vision_provider import get_vision_settings
 from sql.database import session_scope
 from sql.enums import AssetStatus, DescriptionStatus, JobStatus, JobType
@@ -34,6 +35,17 @@ class InvalidAssetDescriptionJobError(AssetDescriptionError):
 @dataclass(frozen=True, slots=True)
 class DescriptionContext:
     shot_id: UUID
+    start_ms: int
+    end_ms: int
+    sampling_version: str
+    sampling_settings: dict
+    frames: tuple["DescriptionFrameContext", ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptionFrameContext:
+    frame_id: UUID
+    timestamp_ms: int
     artifact_path: str
 
 
@@ -79,19 +91,39 @@ async def _prepare_descriptions(
                 .join(ShotFrame, ShotFrame.shot_id == Shot.id)
                 .where(
                     Shot.asset_id == asset.id,
-                    ShotFrame.role == "middle",
                 )
-                .order_by(Shot.sequence)
+                .order_by(Shot.sequence, ShotFrame.sequence)
             )
         ).all()
         if not rows:
             raise InvalidAssetDescriptionJobError(
                 "Сначала необходимо определить планы и кадры"
             )
+        shot_count = await session.scalar(
+            select(func.count()).select_from(Shot).where(Shot.asset_id == asset.id)
+        )
 
         now = _current_time()
-        contexts = []
+        grouped_rows: dict[UUID, tuple[Shot, list[ShotFrame]]] = {}
         for shot, frame in rows:
+            grouped_rows.setdefault(shot.id, (shot, []))[1].append(frame)
+        if len(grouped_rows) != shot_count:
+            raise InvalidAssetDescriptionJobError(
+                "Не для всех планов подготовлены кадры"
+            )
+
+        contexts = []
+        for shot, frames in grouped_rows.values():
+            sampling_versions = {frame.sampling_version for frame in frames}
+            if len(sampling_versions) != 1:
+                raise InvalidAssetDescriptionJobError(
+                    "Кадры плана используют разные версии выборки"
+                )
+            sampling_settings = frames[0].sampling_settings
+            if any(frame.sampling_settings != sampling_settings for frame in frames):
+                raise InvalidAssetDescriptionJobError(
+                    "Кадры плана используют разные параметры выборки"
+                )
             description = await session.scalar(
                 select(ShotDescription).where(ShotDescription.shot_id == shot.id)
             )
@@ -101,7 +133,23 @@ async def _prepare_descriptions(
             description.status = DescriptionStatus.PENDING
             description.error_code = None
             description.error_message = None
-            contexts.append(DescriptionContext(shot.id, frame.artifact_path))
+            contexts.append(
+                DescriptionContext(
+                    shot_id=shot.id,
+                    start_ms=shot.start_ms,
+                    end_ms=shot.end_ms,
+                    sampling_version=sampling_versions.pop(),
+                    sampling_settings=sampling_settings,
+                    frames=tuple(
+                        DescriptionFrameContext(
+                            frame.id,
+                            frame.timestamp_ms,
+                            frame.artifact_path,
+                        )
+                        for frame in frames
+                    ),
+                )
+            )
 
         job.status = JobStatus.RUNNING
         job.celery_task_id = celery_task_id or job.celery_task_id
@@ -135,6 +183,8 @@ async def _store_description_success(
     description_data,
     raw_response: dict,
     prompt_version: str,
+    sampling_version: str,
+    sampling_settings: dict,
 ) -> None:
     async with session_scope() as session:
         description = await session.scalar(
@@ -146,12 +196,29 @@ async def _store_description_success(
         description.status = DescriptionStatus.SUCCEEDED
         description.summary = description_data.summary
         description.visible_objects = description_data.visible_objects
+        description.stable_objects = description_data.stable_objects
         description.action = description_data.action
         description.setting = description_data.setting
         description.shot_type = description_data.shot_type
         description.camera_motion = description_data.camera_motion
+        description.object_motion = description_data.object_motion
         description.visible_text = description_data.visible_text
         description.uncertainty = description_data.uncertainty
+        description.frame_observations = [
+            item.model_dump(mode="json") for item in description_data.frame_observations
+        ]
+        description.frame_transitions = [
+            item.model_dump(mode="json") for item in description_data.frame_transitions
+        ]
+        description.temporal_events = [
+            item.model_dump(mode="json") for item in description_data.temporal_events
+        ]
+        description.field_evidence = [
+            item.model_dump(mode="json") for item in description_data.field_evidence
+        ]
+        description.schema_version = SHOT_DESCRIPTION_SCHEMA_VERSION
+        description.sampling_version = sampling_version
+        description.sampling_settings = sampling_settings
         description.language = "ru"
         description.provider = provider.provider_name
         description.model = provider.settings.model
@@ -240,7 +307,7 @@ async def execute_asset_description(
     job_id: UUID,
     celery_task_id: str | None = None,
 ) -> dict:
-    """Последовательно описать средний кадр каждого плана локальной моделью."""
+    """Последовательно описать временной набор кадров каждого плана."""
     started_at = monotonic()
     try:
         log_event(
@@ -276,9 +343,18 @@ async def execute_asset_description(
         for context in contexts:
             await _mark_description_running(context.shot_id)
             try:
-                image_path = _resolve_artifact_path(context.artifact_path)
+                frames = [
+                    VisionFrame(
+                        id=frame.frame_id,
+                        timestamp_ms=frame.timestamp_ms,
+                        image_path=_resolve_artifact_path(frame.artifact_path),
+                    )
+                    for frame in context.frames
+                ]
                 description, raw_response, prompt_version = provider.describe(
-                    image_path
+                    frames,
+                    shot_start_ms=context.start_ms,
+                    shot_end_ms=context.end_ms,
                 )
                 await _store_description_success(
                     job_id,
@@ -287,6 +363,8 @@ async def execute_asset_description(
                     description,
                     raw_response,
                     prompt_version,
+                    context.sampling_version,
+                    context.sampling_settings,
                 )
                 log_event(
                     logger,
@@ -298,6 +376,7 @@ async def execute_asset_description(
                     job_id=str(job_id),
                     shot_id=str(context.shot_id),
                     prompt_version=prompt_version,
+                    frames=len(context.frames),
                 )
             except (VisionProviderError, AssetDescriptionError) as error:
                 failed_shot_ids.append(str(context.shot_id))
