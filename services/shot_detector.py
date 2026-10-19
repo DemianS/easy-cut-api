@@ -19,6 +19,9 @@ DEFAULT_CONTENT_THRESHOLD = 27.0
 DEFAULT_MIN_SHOT_LENGTH_SECONDS = 0.5
 DEFAULT_FRAME_EXTRACTION_TIMEOUT_SECONDS = 120
 REPRESENTATIVE_FRAME_MAX_WIDTH = 1280
+THUMBNAIL_MAX_WIDTH = 480
+THUMBNAIL_QUALITY = 75
+THUMBNAIL_VERSION = "webp-v1"
 FRAME_SAMPLING_VERSION = "multi-frame-v1"
 DEFAULT_SHORT_SHOT_THRESHOLD_MS = 1500
 DEFAULT_FRAME_SAMPLE_INTERVAL_MS = 5000
@@ -43,6 +46,14 @@ class ShotBoundary:
 
 @dataclass(frozen=True, slots=True)
 class ExtractedFrame:
+    artifact_path: str
+    width: int
+    height: int
+    reused: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedThumbnail:
     artifact_path: str
     width: int
     height: int
@@ -223,13 +234,25 @@ def detector_metadata(
     )
 
 
-def _scaled_dimensions(width: int, height: int) -> tuple[int, int]:
-    if width <= REPRESENTATIVE_FRAME_MAX_WIDTH:
+def _scaled_dimensions_for_width(
+    width: int,
+    height: int,
+    max_width: int,
+) -> tuple[int, int]:
+    if width <= max_width:
         return width, height
-    scaled_height = round(height * REPRESENTATIVE_FRAME_MAX_WIDTH / width)
+    scaled_height = round(height * max_width / width)
     if scaled_height % 2:
         scaled_height += 1
-    return REPRESENTATIVE_FRAME_MAX_WIDTH, max(2, scaled_height)
+    return max_width, max(2, scaled_height)
+
+
+def _scaled_dimensions(width: int, height: int) -> tuple[int, int]:
+    return _scaled_dimensions_for_width(
+        width,
+        height,
+        REPRESENTATIVE_FRAME_MAX_WIDTH,
+    )
 
 
 def extract_representative_frame(
@@ -331,3 +354,114 @@ def extract_representative_frame(
         elapsed_ms=round((monotonic() - started_at) * 1000),
     )
     return ExtractedFrame(artifact_path, width, height)
+
+
+def generate_webp_thumbnail(
+    source_path: Path,
+    destination: Path,
+    *,
+    source_width: int,
+    source_height: int,
+    artifact_path: str,
+    timeout_seconds: int = DEFAULT_FRAME_EXTRACTION_TIMEOUT_SECONDS,
+) -> GeneratedThumbnail:
+    """Идемпотентно создать лёгкое WebP-превью извлечённого кадра."""
+    started_at = monotonic()
+    width, height = _scaled_dimensions_for_width(
+        source_width,
+        source_height,
+        THUMBNAIL_MAX_WIDTH,
+    )
+    log_event(
+        logger,
+        logging.DEBUG,
+        "thumbnail_generation",
+        LogStatus.STARTED,
+        "Генерация WebP-превью начата",
+        stage="ffmpeg",
+        thumbnail_version=THUMBNAIL_VERSION,
+        timeout_seconds=timeout_seconds,
+    )
+    if destination.is_file() and destination.stat().st_size > 0:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "thumbnail_generation",
+            LogStatus.REUSED,
+            "Существующее WebP-превью переиспользовано",
+            stage="artifact",
+            thumbnail_version=THUMBNAIL_VERSION,
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
+        return GeneratedThumbnail(artifact_path, width, height, reused=True)
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = destination.with_suffix(".tmp.webp")
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        f"scale={width}:{height}",
+        "-c:v",
+        "libwebp",
+        "-quality",
+        str(THUMBNAIL_QUALITY),
+        "-compression_level",
+        "4",
+        "-y",
+        str(temporary_path),
+    ]
+    try:
+        completed_process = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        temporary_path.unlink(missing_ok=True)
+        log_event(
+            logger,
+            logging.ERROR,
+            "thumbnail_generation",
+            LogStatus.FAILED,
+            "Генерация WebP-превью завершилась ошибкой",
+            stage="ffmpeg",
+            thumbnail_version=THUMBNAIL_VERSION,
+            error_type=type(error).__name__,
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
+        raise ShotDetectionError("Не удалось запустить генерацию превью") from error
+    if completed_process.returncode != 0 or not temporary_path.is_file():
+        temporary_path.unlink(missing_ok=True)
+        log_event(
+            logger,
+            logging.ERROR,
+            "thumbnail_generation",
+            LogStatus.FAILED,
+            "FFmpeg не создал WebP-превью",
+            stage="ffmpeg",
+            thumbnail_version=THUMBNAIL_VERSION,
+            return_code=completed_process.returncode,
+            elapsed_ms=round((monotonic() - started_at) * 1000),
+        )
+        raise ShotDetectionError("FFmpeg не смог создать WebP-превью")
+
+    os.replace(temporary_path, destination)
+    log_event(
+        logger,
+        logging.DEBUG,
+        "thumbnail_generation",
+        LogStatus.SUCCEEDED,
+        "WebP-превью успешно создано",
+        stage="ffmpeg",
+        thumbnail_version=THUMBNAIL_VERSION,
+        elapsed_ms=round((monotonic() - started_at) * 1000),
+    )
+    return GeneratedThumbnail(artifact_path, width, height)

@@ -23,7 +23,8 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
 
     from services.asset_description import execute_asset_description
     from services.shot_detection import execute_shot_detection
-    from services.shot_detector import ExtractedFrame, ShotBoundary
+    from services.shot_detector import ExtractedFrame, GeneratedThumbnail
+    from services.shot_detector import ShotBoundary
     from services.vision_provider import FrameObservation, VisionDescription
     from services.vision_provider import VisionSettings
     from sql.database import engine, session_scope
@@ -56,6 +57,16 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "services.shot_detection.extract_representative_frame",
         fake_extract,
+    )
+
+    def fake_thumbnail(source_path, destination, **kwargs):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"webp")
+        return GeneratedThumbnail(kwargs["artifact_path"], 480, 270)
+
+    monkeypatch.setattr(
+        "services.shot_detection.generate_webp_thumbnail",
+        fake_thumbnail,
     )
     monkeypatch.setattr(
         "services.asset_description.get_vision_settings",
@@ -190,6 +201,8 @@ async def _run_shot_analysis_scenario(tmp_path: Path, monkeypatch) -> None:
         assert len(frames) == 6
         assert [frame.role for frame in frames[:3]] == ["start", "middle", "end"]
         assert all(frame.sampling_version == "multi-frame-v1" for frame in frames)
+        assert all(frame.thumbnail_path.endswith(".webp") for frame in frames)
+        assert all("/webp-v1/" in frame.thumbnail_path for frame in frames)
         assert all(
             frame.sampling_settings["max_frames_per_shot"] == 8 for frame in frames
         )

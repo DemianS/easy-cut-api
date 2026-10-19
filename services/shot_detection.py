@@ -20,9 +20,11 @@ from services.shot_detector import DEFAULT_MAX_FRAMES_PER_SHOT
 from services.shot_detector import DEFAULT_MIN_SHOT_LENGTH_SECONDS
 from services.shot_detector import DEFAULT_SHORT_SHOT_THRESHOLD_MS
 from services.shot_detector import FRAME_SAMPLING_VERSION
+from services.shot_detector import THUMBNAIL_VERSION
 from services.shot_detector import FrameSample, FrameSamplingSettings
 from services.shot_detector import ShotBoundary, detect_shots, detector_metadata
 from services.shot_detector import extract_representative_frame
+from services.shot_detector import generate_webp_thumbnail
 from services.shot_detector import select_frame_samples
 from sql.database import session_scope
 from sql.enums import AssetKind, AssetStatus, DescriptionStatus, JobStatus, JobType
@@ -271,12 +273,35 @@ def _artifact_destination(
     return destination, relative_path.as_posix()
 
 
+def _thumbnail_destination(
+    asset_id: UUID,
+    shot_id: UUID,
+    sample: FrameSample,
+) -> tuple[Path, str]:
+    filename = f"{sample.timestamp_ms}_{sample.role}.webp"
+    relative_path = PurePosixPath(
+        "thumbnails",
+        THUMBNAIL_VERSION,
+        str(asset_id),
+        str(shot_id),
+        filename,
+    )
+    root = Path(os.getenv("ARTIFACTS_PATH", DEFAULT_ARTIFACTS_PATH)).resolve()
+    destination = (root / Path(*relative_path.parts)).resolve()
+    try:
+        destination.relative_to(root)
+    except ValueError as error:
+        raise ShotDetectionJobError("Некорректный путь превью") from error
+    return destination, relative_path.as_posix()
+
+
 async def _store_frame(
     job_id: UUID,
     shot_id: UUID,
     sample: FrameSample,
     sampling_settings: dict[str, int],
     artifact_path: str,
+    thumbnail_path: str,
     width: int,
     height: int,
 ) -> None:
@@ -308,6 +333,7 @@ async def _store_frame(
         frame.sampling_version = FRAME_SAMPLING_VERSION
         frame.sampling_settings = sampling_settings
         frame.artifact_path = artifact_path
+        frame.thumbnail_path = thumbnail_path
         frame.width = width
         frame.height = height
         job = await session.get(Job, job_id)
@@ -495,12 +521,26 @@ async def execute_shot_detection(
                     artifact_path=artifact_path,
                     timeout_seconds=timeout,
                 )
+                thumbnail_destination, thumbnail_path = _thumbnail_destination(
+                    context.asset_id,
+                    shot_id,
+                    sample,
+                )
+                generate_webp_thumbnail(
+                    destination,
+                    thumbnail_destination,
+                    source_width=frame.width,
+                    source_height=frame.height,
+                    artifact_path=thumbnail_path,
+                    timeout_seconds=timeout,
+                )
                 await _store_frame(
                     job_id,
                     shot_id,
                     sample,
                     sampling_settings_data,
                     frame.artifact_path,
+                    thumbnail_path,
                     frame.width,
                     frame.height,
                 )

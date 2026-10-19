@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from services.shot_detector import detect_shots, extract_representative_frame
 from services.shot_detector import FrameSamplingSettings, ShotBoundary
+from services.shot_detector import generate_webp_thumbnail
 from services.shot_detector import select_frame_samples
 
 
@@ -124,3 +125,62 @@ def test_extract_representative_frame_reuses_non_empty_artifact(
 
     assert result.reused is True
     assert destination.read_bytes() == b"existing-jpeg"
+
+
+def test_generate_webp_thumbnail_uses_bounded_width_and_atomic_file(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured_command = []
+
+    def fake_run(command, **kwargs):
+        captured_command.extend(command)
+        Path(command[-1]).write_bytes(b"webp")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr("services.shot_detector.subprocess.run", fake_run)
+    source = tmp_path / "frame.jpg"
+    source.write_bytes(b"jpeg")
+    destination = tmp_path / "thumbnails" / "frame.webp"
+
+    result = generate_webp_thumbnail(
+        source,
+        destination,
+        source_width=1920,
+        source_height=1080,
+        artifact_path="thumbnails/webp-v1/frame.webp",
+    )
+
+    assert captured_command[0] == "ffmpeg"
+    assert "libwebp" in captured_command
+    assert "scale=480:270" in captured_command
+    assert destination.read_bytes() == b"webp"
+    assert result.width == 480
+    assert result.height == 270
+
+
+def test_generate_webp_thumbnail_reuses_non_empty_artifact(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "frame.jpg"
+    source.write_bytes(b"jpeg")
+    destination = tmp_path / "frame.webp"
+    destination.write_bytes(b"existing-webp")
+    monkeypatch.setattr(
+        "services.shot_detector.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+    )
+
+    result = generate_webp_thumbnail(
+        source,
+        destination,
+        source_width=320,
+        source_height=180,
+        artifact_path="thumbnails/webp-v1/frame.webp",
+    )
+
+    assert result.reused is True
+    assert result.width == 320
+    assert result.height == 180
+    assert destination.read_bytes() == b"existing-webp"

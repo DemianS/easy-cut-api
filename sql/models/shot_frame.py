@@ -17,6 +17,7 @@ class ShotFrame(TimestampMixin, Base):
         UniqueConstraint("shot_id", "sequence", name="shot_sequence"),
         UniqueConstraint("shot_id", "timestamp_ms", name="shot_timestamp"),
         UniqueConstraint("artifact_path", name="artifact_path"),
+        UniqueConstraint("thumbnail_path", name="thumbnail_path"),
         CheckConstraint(
             "role IN ('single', 'start', 'middle', 'sample', 'end')",
             name="role",
@@ -45,5 +46,6 @@ class ShotFrame(TimestampMixin, Base):
         server_default=text("'{}'::jsonb"),
     )
     artifact_path: Mapped[str] = mapped_column(Text)
+    thumbnail_path: Mapped[str | None] = mapped_column(Text)
     width: Mapped[int] = mapped_column(Integer)
     height: Mapped[int] = mapped_column(Integer)

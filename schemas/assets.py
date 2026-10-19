@@ -84,6 +84,7 @@ class ShotFrameResponse(BaseModel):
     sampling_version: str
     sampling_settings: dict
     artifact_path: str
+    thumbnail_path: str | None
     width: int
     height: int
 
