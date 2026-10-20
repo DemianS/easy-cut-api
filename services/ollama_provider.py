@@ -9,6 +9,7 @@ from typing import Any
 import requests
 
 from services.logging_config import log_event, LogStatus
+from services.model_gateway import ModelAdmissionError, ModelExecutionGateway
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,7 @@ class OllamaProvider:
         images: list[str],
         response_format: dict[str, Any],
         think: bool = False,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Получить целостный структурированный ответ через `/api/generate`."""
         started_at = time.monotonic()
@@ -189,14 +191,17 @@ class OllamaProvider:
             "think": think,
             "stream": False,
         }
+        if options is not None:
+            payload["options"] = options
         try:
-            response = requests.post(
-                f"{self.base_url}/api/generate",
-                json=payload,
-                timeout=self.timeout_seconds,
-            )
-            response.raise_for_status()
-        except requests.RequestException as error:
+            with ModelExecutionGateway(self.base_url, self.timeout_seconds).admit():
+                response = requests.post(
+                    f"{self.base_url}/api/generate",
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+        except (requests.RequestException, ModelAdmissionError) as error:
             log_event(
                 logger,
                 logging.ERROR,
@@ -264,13 +269,14 @@ class OllamaProvider:
             model=model,
         )
         try:
-            response = requests.post(
-                f"{self.base_url}/api/embed",
-                json={"model": model, "input": text, "dimensions": dimensions},
-                timeout=self.timeout_seconds,
-            )
-            response.raise_for_status()
-        except requests.RequestException as error:
+            with ModelExecutionGateway(self.base_url, self.timeout_seconds).admit():
+                response = requests.post(
+                    f"{self.base_url}/api/embed",
+                    json={"model": model, "input": text, "dimensions": dimensions},
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+        except (requests.RequestException, ModelAdmissionError) as error:
             log_event(
                 logger,
                 logging.ERROR,

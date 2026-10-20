@@ -3,7 +3,6 @@
 .uv-cache
 .black-cache
 .env*
-tests
 __pycache__
 .pytest_cache
 .pytest-*-tmp

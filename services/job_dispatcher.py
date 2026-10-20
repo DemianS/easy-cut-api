@@ -20,6 +20,10 @@ DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RECOVERY_ATTEMPTS = 3
 
 TASK_NAMES = {
+    JobType.MONTAGE_PLAN: "easy_cut.montage_stage",
+    JobType.MONTAGE_SEARCH: "easy_cut.montage_stage",
+    JobType.MONTAGE_SELECT: "easy_cut.montage_stage",
+    JobType.MONTAGE_RENDER: "easy_cut.montage_stage",
     JobType.LIBRARY_SCAN: "easy_cut.library_scan",
     JobType.ASSET_PROBE: "easy_cut.asset_probe",
     JobType.SHOT_DETECTION: "easy_cut.shot_detection",
@@ -40,6 +44,19 @@ class DispatchRequest:
     job_id: UUID
     task_id: str
     task_name: str
+    queue: str | None = None
+
+
+def montage_queue(job_type: str) -> str | None:
+    if job_type == JobType.MONTAGE_RENDER:
+        return "user_render"
+    if job_type in {
+        JobType.MONTAGE_PLAN,
+        JobType.MONTAGE_SEARCH,
+        JobType.MONTAGE_SELECT,
+    }:
+        return "model_interactive"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,7 +325,12 @@ async def _recover_stalled_jobs() -> list[DispatchRequest]:
             await session.scalars(
                 select(Job)
                 .where(
-                    Job.job_type != JobType.LIBRARY_PREPARATION.value,
+                    Job.job_type.notin_(
+                        [
+                            JobType.LIBRARY_PREPARATION.value,
+                            JobType.MONTAGE.value,
+                        ]
+                    ),
                     Job.status.in_(ACTIVE_STATUSES),
                 )
                 .with_for_update(skip_locked=True)
@@ -347,7 +369,14 @@ async def _recover_stalled_jobs() -> list[DispatchRequest]:
             job.error_code = None
             job.error_message = None
             job.finished_at = None
-            dispatches.append(DispatchRequest(job.id, task_id, task_name))
+            dispatches.append(
+                DispatchRequest(
+                    job.id,
+                    task_id,
+                    task_name,
+                    montage_queue(job.job_type),
+                )
+            )
             log_event(
                 logger,
                 logging.WARNING,
@@ -373,6 +402,9 @@ async def reconcile_jobs() -> list[DispatchRequest]:
         stage="inspect",
     )
     dispatches = await _recover_stalled_jobs()
+    from services.montage_workflow import advance_montages
+
+    dispatches.extend(await advance_montages())
     async with session_scope() as session:
         pipelines = list(
             await session.scalars(

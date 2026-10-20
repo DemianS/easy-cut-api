@@ -7,6 +7,7 @@ from tasks.diagnostics import healthcheck
 from tasks.library_scan import library_scan
 from tasks.job_dispatcher import reconcile_background_jobs
 from tasks.shot_detection import shot_detection
+from tasks.montage import montage_stage
 from tasks.base import DatabaseJobTask
 from worker import build_broker_url, celery_app, create_celery_app
 
@@ -56,6 +57,7 @@ def test_database_jobs_use_common_failure_guard() -> None:
         shot_detection,
         asset_description,
         asset_embedding,
+        montage_stage,
     )
 
     assert all(isinstance(task, DatabaseJobTask) for task in guarded_tasks)

@@ -20,7 +20,8 @@ class Job(TimestampMixin, Base):
         CheckConstraint(
             "job_type IN ("
             "'library_preparation', 'library_scan', 'asset_probe', 'shot_detection', "
-            "'asset_description', 'asset_embedding'"
+            "'asset_description', 'asset_embedding', 'montage', 'montage_plan', "
+            "'montage_search', 'montage_select', 'montage_render'"
             ")",
             name="job_type",
         ),

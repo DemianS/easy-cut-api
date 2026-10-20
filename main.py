@@ -10,6 +10,7 @@ import logging
 from routers.assets import router as assets_router
 from routers.jobs import router as jobs_router
 from routers.search import router as search_router
+from routers.montages import router as montages_router
 from services.logging_config import configure_logging, log_event, LogStatus
 from services.logging_config import reset_request_id, set_request_id
 
@@ -23,12 +24,14 @@ app = FastAPI(
 app.include_router(jobs_router)
 app.include_router(assets_router)
 app.include_router(search_router)
+app.include_router(montages_router)
 
 
 @app.middleware("http")
 async def log_http_request(request: Request, call_next):
     """Записать безопасный итог HTTP-запроса без query и тела."""
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    request.state.request_id = request_id
     request_id_token = set_request_id(request_id)
     started_at = monotonic()
     context = {

@@ -49,6 +49,7 @@ def reconcile_background_jobs() -> dict:
                 request.task_name,
                 args=[str(request.job_id)],
                 task_id=request.task_id,
+                **({"queue": request.queue} if request.queue else {}),
             )
             dispatched += 1
         except Exception as error:

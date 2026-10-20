@@ -9,6 +9,7 @@ from celery import Celery
 from celery.signals import task_failure, task_postrun, task_prerun, task_retry
 
 from services.logging_config import configure_logging, log_event, LogStatus
+from services.model_gateway import MODEL_REQUEST_CLASS
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ def create_celery_app() -> Celery:
             "tasks.library_scan",
             "tasks.job_dispatcher",
             "tasks.shot_detection",
+            "tasks.montage",
         ),
     )
     app.conf.update(
@@ -61,6 +63,11 @@ def create_celery_app() -> Celery:
         ),
         worker_prefetch_multiplier=1,
         worker_hijack_root_logger=False,
+        task_routes={
+            "easy_cut.reconcile_jobs": {"queue": "control"},
+            "easy_cut.asset_description": {"queue": "model_background"},
+            "easy_cut.asset_embedding": {"queue": "model_background"},
+        },
     )
     app.conf.beat_schedule = {
         "reconcile-background-jobs": {
@@ -89,6 +96,15 @@ def log_task_started(sender=None, task_id=None, args=None, **kwargs) -> None:
     """Записать начало любой Celery-задачи."""
     if task_id:
         _TASK_STARTED_AT[task_id] = monotonic()
+    MODEL_REQUEST_CLASS.set(
+        "background"
+        if getattr(sender, "name", "")
+        in {
+            "easy_cut.asset_description",
+            "easy_cut.asset_embedding",
+        }
+        else "interactive"
+    )
     log_event(
         logger,
         logging.INFO,

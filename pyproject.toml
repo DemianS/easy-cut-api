@@ -45,10 +45,12 @@ only-include = [
 addopts = "-q"
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["real_gateway: проверка реального admission control Redis"]
 
 [dependency-groups]
 dev = [
     "black>=25.1,<27",
+    "httpx>=0.28,<1.0",
     "faker>=40.43.0",
     "flake8>=7.4.1",
     "pytest>=8.4.2",

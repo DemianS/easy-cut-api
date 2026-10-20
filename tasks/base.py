@@ -36,6 +36,13 @@ async def mark_unhandled_job_failure(
         }:
             return False
 
+        if (
+            celery_task_id
+            and job.celery_task_id
+            and job.celery_task_id != celery_task_id
+        ):
+            return False
+
         finished_at = datetime.now(UTC)
         job.status = JobStatus.FAILED
         job.celery_task_id = celery_task_id or job.celery_task_id

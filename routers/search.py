@@ -3,18 +3,15 @@
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependencies import get_session
 from schemas.search import ShotSearchRequest, ShotSearchResponse, ShotSearchResult
-from services.asset_embedding import TEXT_VERSION
+from services.shot_search import shot_search_statement
 from services.embedding_provider import EmbeddingProviderError
 from services.embedding_provider import EmbeddingProviderNotConfiguredError
 from services.embedding_provider import TextEmbeddingProvider
 from services.embedding_provider import get_embedding_settings
-from sql.enums import EmbeddingStatus
-from sql.models import Shot, ShotDescription, ShotEmbedding
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -40,31 +37,16 @@ async def search_shots(
             detail=str(error),
         ) from error
 
-    similarity = (1 - ShotEmbedding.embedding.cosine_distance(query_vector)).label(
-        "similarity"
-    )
-    filters = [
-        ShotEmbedding.status == EmbeddingStatus.SUCCEEDED,
-        ShotEmbedding.provider == provider.provider_name,
-        ShotEmbedding.model == settings.model,
-        ShotEmbedding.text_version == TEXT_VERSION,
-        ShotEmbedding.embedding.is_not(None),
-    ]
-    if request.asset_id is not None:
-        filters.append(Shot.asset_id == request.asset_id)
-    if request.min_similarity is not None:
-        filters.append(similarity >= request.min_similarity)
-
-    statement = (
-        select(Shot, ShotDescription, ShotEmbedding, similarity)
-        .join(
-            ShotDescription,
-            ShotDescription.id == ShotEmbedding.shot_description_id,
-        )
-        .join(Shot, Shot.id == ShotDescription.shot_id)
-        .where(*filters)
-        .order_by(similarity.desc(), Shot.id)
-        .limit(request.limit)
+    statement = shot_search_statement(
+        query_vector,
+        provider,
+        settings,
+        limit=request.limit,
+        min_similarity=request.min_similarity,
+        asset_id=request.asset_id,
+        asset_ids=request.asset_ids,
+        media_root_id=request.media_root_id,
+        min_duration_ms=request.min_duration_ms,
     )
     rows = (await session.execute(statement)).all()
     return ShotSearchResponse(

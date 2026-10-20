@@ -4,6 +4,7 @@ from sql.models.asset import Asset
 from sql.models.asset_location import AssetLocation
 from sql.models.job import Job
 from sql.models.media_root import MediaRoot
+from sql.models.montage import MontageRender, MontageRun, Project, TimelineVersion
 from sql.models.shot import Shot
 from sql.models.shot_description import ShotDescription
 from sql.models.shot_embedding import ShotEmbedding
@@ -15,6 +16,10 @@ __all__ = (
     "AssetLocation",
     "Job",
     "MediaRoot",
+    "MontageRun",
+    "MontageRender",
+    "Project",
+    "TimelineVersion",
     "Shot",
     "ShotDescription",
     "ShotEmbedding",

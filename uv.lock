@@ -342,6 +342,7 @@ dev = [
     { name = "black" },
     { name = "faker" },
     { name = "flake8" },
+    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
@@ -370,6 +371,7 @@ dev = [
     { name = "black", specifier = ">=25.1,<27" },
     { name = "faker", specifier = ">=40.43.0" },
     { name = "flake8", specifier = ">=7.4.1" },
+    { name = "httpx", specifier = ">=0.28,<1.0" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
 ]

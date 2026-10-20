@@ -29,6 +29,11 @@ class JobStatus(StrEnum):
 
 
 class JobType(StrEnum):
+    MONTAGE = "montage"
+    MONTAGE_PLAN = "montage_plan"
+    MONTAGE_SEARCH = "montage_search"
+    MONTAGE_SELECT = "montage_select"
+    MONTAGE_RENDER = "montage_render"
     LIBRARY_PREPARATION = "library_preparation"
     LIBRARY_SCAN = "library_scan"
     ASSET_PROBE = "asset_probe"
